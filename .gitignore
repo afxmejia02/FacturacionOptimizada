@@ -1,0 +1,22 @@
+# Ignore the virtual environment and generated build output,
+# but keep the actual project folders under version control.
+/*
+!/.gitignore
+!/QUICKSTART.spec
+!/facturacion/
+!/facturacion/**
+!/mapa-de-cargos/
+!/mapa-de-cargos/**
+!/web_ui/
+!/web_ui/**
+
+**/__pycache__/
+**/*.py[cod]
+**/.ipynb_checkpoints/
+build/
+dist/
+etc/
+Include/
+Lib/
+Scripts/
+share/

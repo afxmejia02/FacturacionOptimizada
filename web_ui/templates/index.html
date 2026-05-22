@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Validación - Subir archivos</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  </head>
+  <body class="p-4">
+    <div class="container">
+      <h1 class="mb-4">Sistema de Validación (Web)</h1>
+
+      {% with messages = get_flashed_messages() %}
+        {% if messages %}
+          <div class="alert alert-warning">
+            {% for msg in messages %}{{ msg }}<br>{% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
+
+      <form action="/validate" method="post" enctype="multipart/form-data">
+        <div class="mb-3">
+          <label class="form-label">Aplicación</label>
+          <select name="app_choice" id="app_choice" class="form-select" onchange="toggleForms()">
+            <option value="validation">Validación (PDF vs Excel)</option>
+            <option value="reconciliation">Conciliación Nómina (múltiples PDFs)</option>
+          </select>
+        </div>
+
+        <div id="validation_fields">
+          <div class="mb-3">
+            <label class="form-label">Tipo</label>
+            <select name="tipo" class="form-select">
+              <option value="equipos">EQUIPOS</option>
+              <option value="servicios">SERVICIOS</option>
+              <option value="perfiles">PERFILES</option>
+            </select>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">Informe PDF</label>
+            <input class="form-control" type="file" name="pdf" accept=".pdf">
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">Datos históricos (Excel)</label>
+            <input class="form-control" type="file" name="excel" accept=".xlsx,.xls">
+          </div>
+        </div>
+
+        <div id="reconciliation_fields" style="display:none;">
+          <div class="mb-3">
+            <label class="form-label">Desprendibles (sube uno o más PDFs)</label>
+            <input class="form-control" type="file" name="desprendibles" accept=".pdf" multiple>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Transferencias (sube uno o más PDFs)</label>
+            <input class="form-control" type="file" name="transferencias" accept=".pdf" multiple>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Seguridad social (opcional, múltiples PDFs)</label>
+            <input class="form-control" type="file" name="seguridad" accept=".pdf" multiple>
+          </div>
+        </div>
+
+        <button class="btn btn-primary">Enviar</button>
+      </form>
+
+      <script>
+        function toggleForms(){
+          var choice = document.getElementById('app_choice').value;
+          document.getElementById('validation_fields').style.display = choice === 'validation' ? 'block' : 'none';
+          document.getElementById('reconciliation_fields').style.display = choice === 'reconciliation' ? 'block' : 'none';
+        }
+      </script>
+    </div>
+  </body>
+  </html>
