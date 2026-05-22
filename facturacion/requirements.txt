@@ -1,0 +1,14 @@
+# Services & Equipment Validation System - Requirements
+# Install with: pip install -r requirements.txt
+
+# Core dependencies
+pandas>=1.3.0          # Data manipulation and analysis
+pdfplumber>=0.7.0      # PDF table extraction
+openpyxl>=3.6.0        # Excel file support
+
+# Standard library modules (pre-installed):
+# - tkinter (GUI framework)
+# - re (regular expressions)
+# - datetime (date/time handling)
+# - threading (background processing)
+# - pathlib (path operations)

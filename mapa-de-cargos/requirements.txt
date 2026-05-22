@@ -1,0 +1,14 @@
+# Payroll Data Reconciliation GUI Application - Requirements
+# Install with: pip install -r requirements.txt
+
+# Core dependencies
+pandas>=1.3.0          # Data manipulation and analysis
+pdfplumber>=0.7.0      # PDF text extraction
+openpyxl>=3.6.0        # Excel file support (optional, for future enhancements)
+
+# Standard library modules (pre-installed with Python):
+# - tkinter (GUI framework)
+# - re (regular expressions)
+# - os (file system operations)
+# - threading (background processing)
+# - pathlib (path handling)
