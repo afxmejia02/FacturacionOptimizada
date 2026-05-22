@@ -15,8 +15,14 @@ Autor: Sistema de Conciliación de Nómina
 Versión: 1.0
 """
 
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, ttk
+except Exception:  # pragma: no cover - allows headless import on Streamlit Cloud
+    tk = None
+    filedialog = None
+    messagebox = None
+    ttk = None
 import pandas as pd
 import pdfplumber
 import re
@@ -763,6 +769,8 @@ class PayrollReconciliationApp:
 
 def main():
     """Inicializa y ejecuta la aplicación."""
+    if tk is None:
+        raise RuntimeError("Tkinter is not available in this environment.")
     root = tk.Tk()
     app = PayrollReconciliationApp(root)
     root.mainloop()

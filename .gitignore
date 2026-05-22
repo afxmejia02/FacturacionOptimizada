@@ -2,6 +2,8 @@
 # but keep the actual project folders under version control.
 /*
 !/.gitignore
+!/requirements.txt
+!/streamlit_app.py
 !/QUICKSTART.spec
 !/facturacion/
 !/facturacion/**

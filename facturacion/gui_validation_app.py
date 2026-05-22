@@ -15,8 +15,15 @@ from collections import Counter
 
 import pandas as pd
 import pdfplumber
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, ttk
+except Exception:  # pragma: no cover - allows headless import on Streamlit Cloud
+    tk = None
+    filedialog = None
+    messagebox = None
+    ttk = None
 
 
 class ServicesValidationApp:
@@ -661,6 +668,8 @@ class ServicesValidationApp:
 
 
 def main():
+    if tk is None:
+        raise RuntimeError("Tkinter is not available in this environment.")
     root = tk.Tk()
     ServicesValidationApp(root)
     root.mainloop()
