@@ -45,8 +45,13 @@ def validate():
         parts.append('<tbody>')
 
         for _, row in df_display.iterrows():
-            estado = str(row.get("Estado", "")).upper()
-            row_class = "table-success" if estado == "OK" else "table-danger"
+            estado = str(row.get("Estado", "")).strip().lower()
+            if estado == "ok":
+                row_class = "table-success"
+            elif "ibc sin soporte" in estado:
+                row_class = "table-warning"
+            else:
+                row_class = "table-danger"
             parts.append(f'<tr class="{row_class}">')
             for h in headers:
                 val = row[h] if pd.notna(row[h]) else ""
