@@ -26,6 +26,7 @@ except Exception:  # pragma: no cover - allows headless import on Streamlit Clou
 import pandas as pd
 import pdfplumber
 import re
+
 import os
 from pathlib import Path
 import threading
@@ -47,7 +48,6 @@ class PayrollReconciliationApp:
         self.root = root
         self.root.title("Sistema de Conciliación de Nómina")
         self.root.geometry("1400x800")
-        self.root.configure(bg="#f0f0f0")
         
         # Variables para almacenar las rutas seleccionadas
         self.desprendibles_path = tk.StringVar()
@@ -281,13 +281,9 @@ class PayrollReconciliationApp:
                             )
 
                             # Extraer Devengado: buscar 'Devengado' primero, si no, intentar 'TOTALES'
+                            #si en la columna SALDOS hay
+
                             deven_match = re.search(
-                                r"Devengad[o|os]?[:\s].*?\$\s*([\d\.,]+)",
-                                bloque,
-                                re.IGNORECASE | re.DOTALL
-                            )
-                            if not deven_match:
-                                deven_match = re.search(
                                     r"TOTALES[:\s].*?\$\s*([\d\.,]+)",
                                     bloque,
                                     re.IGNORECASE | re.DOTALL
@@ -373,7 +369,7 @@ class PayrollReconciliationApp:
         """
         Procesa PDFs de seguridad social y extrae:
         - CC
-        - IBC únicos (solo el primer valor monetario por fila)
+        - IBC únicos (solo el primer valor de la columna IBC por página)
 
         Args:
             folder_path (str): ruta carpeta PDFs
@@ -383,6 +379,50 @@ class PayrollReconciliationApp:
         """
 
         registros = []
+
+        def _extraer_ibc_desde_tabla(tabla):
+            """Obtiene todos los valores distintos de la columna IBC dentro de una tabla extraída."""
+            if not tabla:
+                return []
+
+            columna_ibc = None
+            fila_inicio = None
+
+            for idx_fila, fila in enumerate(tabla):
+                if not fila:
+                    continue
+                for idx_col, celda in enumerate(fila):
+                    if celda and re.search(r"\bIBC\b", str(celda), re.IGNORECASE):
+                        columna_ibc = idx_col
+                        fila_inicio = idx_fila
+                        break
+                if columna_ibc is not None:
+                    break
+
+            if columna_ibc is None:
+                return []
+
+            ibc_encontrados = []
+            vistos = set()
+
+            for fila in tabla[fila_inicio + 1:]:
+                if not fila or columna_ibc >= len(fila):
+                    continue
+
+                celda = fila[columna_ibc]
+                if not celda:
+                    continue
+
+                match_ibc = re.search(r"\$?\s*[\d\.,]+", str(celda))
+                if not match_ibc:
+                    continue
+
+                ibc = re.sub(r"[^\d]", "", match_ibc.group(0))
+                if ibc and ibc not in vistos:
+                    vistos.add(ibc)
+                    ibc_encontrados.append(ibc)
+
+            return ibc_encontrados
 
         for filename in os.listdir(folder_path):
             if not filename.lower().endswith(".pdf"):
@@ -411,22 +451,35 @@ class PayrollReconciliationApp:
                     cc = re.sub(r"[^\d]", "", cc_raw)
 
                     # =========================
-                    # 2. UBICAR LÍNEAS DONDE ESTÁN LOS IBC
+                    # 2. EXTRAER IBC DESDE LA POSICIÓN DE LA COLUMNA EN LA TABLA
                     # =========================
-                    lines = texto.splitlines()
                     ibc_set = set()
-                    for idx, line in enumerate(lines):
-                        if re.search(r'\bIBC\b', line, re.IGNORECASE):
-                            # scan following few lines for monetary values
-                            for follow in lines[idx: idx + 12]:
-                                if not follow or follow.strip() == "":
-                                    continue
-                                match_ibc = re.search(r'\$?\s*[\d\.,]+', follow)
-                                if match_ibc:
-                                    valor = match_ibc.group(0)
-                                    numero = self._limpiar_numero(valor)
-                                    if numero and numero > 0:
-                                        ibc_set.add(int(numero))
+
+                    tablas = []
+                    try:
+                        tablas = page.extract_tables() or []
+                    except Exception:
+                        tablas = []
+
+                    for tabla in tablas:
+                        for ibc in _extraer_ibc_desde_tabla(tabla):
+                            ibc_set.add(ibc)
+
+                    # Fallback: si no se pudo leer la tabla, usar el texto plano
+                    if not ibc_set:
+                        lines = texto.splitlines()
+                        for idx, line in enumerate(lines):
+                            if re.search(r'\bIBC\b', line, re.IGNORECASE):
+                                for follow in lines[idx: idx + 12]:
+                                    if not follow or follow.strip() == "":
+                                        continue
+                                    match_ibc = re.search(r'\$?\s*[\d\.,]+', follow)
+                                    if match_ibc:
+                                        valor = match_ibc.group(0)
+                                        ibc = re.sub(r"[^\d]", "", valor)
+                                        if ibc:
+                                            ibc_set.add(ibc)
+                                
 
                     # =========================
                     # 4. GUARDAR RESULTADOS
@@ -437,7 +490,6 @@ class PayrollReconciliationApp:
                             "cc": cc,
                             "ibc": ibc
                         })
-                        print(cc, ibc)
 
                     
 
@@ -630,6 +682,35 @@ class PayrollReconciliationApp:
         """
         Concilia los datos de desprendibles y transferencias e incorpora Devengado e IBC.
         """
+        def _normalizar_numero(valor):
+            if valor is None:
+                return None
+            try:
+                if pd.isna(valor):
+                    return None
+            except Exception:
+                pass
+
+            try:
+                numero = float(valor)
+            except Exception:
+                return None
+
+            if numero.is_integer():
+                return int(numero)
+            return numero
+
+        def _normalizar_lista(valores):
+            normalizados = []
+            vistos = set()
+            for valor in valores or []:
+                numero = _normalizar_numero(valor)
+                if numero is None or numero in vistos:
+                    continue
+                vistos.add(numero)
+                normalizados.append(numero)
+            return normalizados
+
         resultados = []
 
         # Limpiar números de documento
@@ -648,36 +729,64 @@ class PayrollReconciliationApp:
 
         # Agrupar desprendibles por identificación y conciliar con transferencias
         for doc, grupo_despr in df_desprendibles.groupby("Identificacion"):
-            netos = set(grupo_despr["Neto"])
+            netos = set(_normalizar_lista(grupo_despr["Neto"].dropna().tolist()))
             # Devengado: tomar valores únicos (puede haber varios)
-            devs = list(grupo_despr["Devengado"].dropna().unique()) if "Devengado" in grupo_despr else []
+            devs = _normalizar_lista(grupo_despr["Devengado"].dropna().tolist()) if "Devengado" in grupo_despr else []
+            sum_devs = _normalizar_numero(sum(devs)) if devs else None
+            if doc == "92030208":
+                print("DEBUG - Identificación 91509151:")
+                print("Netos encontrados en desprendibles:", netos)
+                print("Devengados encontrados en desprendibles:", devs)
+                print("Suma de Devengados:", sum_devs)
+
             cta = grupo_despr["Cuenta"].iloc[0] if "Cuenta" in grupo_despr.columns else None
 
             # Buscar transferencias coincidentes
             grupo_trans = pd.DataFrame()
+            estado = "Transferencia no encontrada"
             if df_transferencia is not None and not df_transferencia.empty:
                 grupo_trans = df_transferencia[
                     (df_transferencia["Documento"] == doc) |
                     (df_transferencia["Cuenta"] == cta)
                 ]
 
-            # Caso 1: documento no encontrado
-            if grupo_trans.empty:
-                valores_trans = None
-                estado = "Documento o Cuenta no encontrado"
-            else:
-                valores_trans = set(grupo_trans["Valor"])
+            if not grupo_trans.empty:
+                valores_trans = set(_normalizar_lista(grupo_trans["Valor"].dropna().tolist()))
                 if len(netos.intersection(valores_trans)) > 0:
                     estado = "OK"
                 else:
                     estado = "Valor no coincide"
+            else:
+                valores_trans = None
 
             # Obtener IBCs desde df_seguridad si está disponible
-            ibc_vals = None
+            ibc_vals = []
             if df_seguridad is not None and not df_seguridad.empty:
                 matches = df_seguridad[df_seguridad["cc"] == doc]
                 if not matches.empty:
-                    ibc_vals = list(matches["ibc"].unique())
+                    ibc_vals = _normalizar_lista(matches["ibc"].dropna().tolist())
+
+            if estado == "OK":
+                if sum_devs is None:
+                    estado = "Devengado no encontrado"
+                elif not ibc_vals or sum_devs not in ibc_vals:
+                    estado = "Devengado no coincide"
+                elif len(ibc_vals) > 1:
+                    estado = "IBC sin soporte"
+            elif estado == "Valor no coincide":
+                if sum_devs is None:
+                    estado = "Valor no coincide - Devengado no encontrado"
+                elif not ibc_vals or sum_devs not in ibc_vals:
+                    estado = "Valor no coincide - Devengado no coincide"
+                elif len(ibc_vals) > 1:
+                    estado = "Valor no coincide - IBC sin soporte"
+            elif estado == "Transferencia no encontrada":
+                if sum_devs is None:
+                    estado = "Transferencia no encontrada - Devengado no encontrado"
+                elif not ibc_vals or sum_devs not in ibc_vals:
+                    estado = "Transferencia no encontrada - Devengado no coincide"
+                elif len(ibc_vals) > 1:
+                    estado = "Transferencia no encontrada - IBC sin soporte"
 
             resultados.append({
                 "Identificación": doc,
@@ -685,8 +794,8 @@ class PayrollReconciliationApp:
                 "Estado": estado,
                 "Neto_desprendibles": list(netos),
                 "Valores_transferencia": list(valores_trans) if valores_trans is not None else None,
-                "Devengado": devs,
-                "IBC": ibc_vals,
+                "Devengado": sum_devs,
+                "IBC": ibc_vals if ibc_vals else None,
             })
 
         return pd.DataFrame(resultados)
@@ -707,12 +816,16 @@ class PayrollReconciliationApp:
         # Paso 3: insertar cada fila en la tabla
         for idx, row in self.df_resultado.iterrows():
             # Determinar la etiqueta de color según el estado
-            if row["Estado"] == "Documento o Cuenta no encontrado":
+            estado = str(row["Estado"] or "")
+            estado_norm = estado.lower()
+            if "transferencia no encontrada" in estado_norm or "devengado no coincide" in estado_norm or "devengado no encontrado" in estado_norm or "valor no coincide" in estado_norm:
                 tag = "error"
-            elif row["Estado"] == "OK":
+            elif estado_norm == "ibc sin soporte":
+                tag = "warning"
+            elif estado_norm.strip() == "ok":
                 tag = "ok"
             else:
-                tag = "warning"
+                tag = "error"
 
             # Formatear los valores para mostrar
             neto_display = self.formatear_valores(row["Neto_desprendibles"])

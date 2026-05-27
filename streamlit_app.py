@@ -51,6 +51,23 @@ def format_count(value):
         return value
 
 
+def style_estado_table(df_display: pd.DataFrame) -> pd.io.formats.style.Styler:
+    def row_style(row: pd.Series):
+        estado = str(row.get("Estado", "")).strip().lower()
+        if estado == "ok":
+            color = "#d9f7d9"
+            text = "#166534"
+        elif "ibc sin soporte" in estado:
+            color = "#fff4cc"
+            text = "#8a5b00"
+        else:
+            color = "#ffd6d6"
+            text = "#8b1e1e"
+        return [f"background-color: {color}; color: {text};"] * len(row)
+
+    return df_display.style.apply(row_style, axis=1)
+
+
 def build_validation_rows(pdf_path: str, excel_path: str, tipo: str):
     validator_obj = validator.ServicesValidationApp.__new__(validator.ServicesValidationApp)
     rows = []
@@ -118,7 +135,7 @@ def build_reconciliation_rows(despr_dir: str, trans_dir: str, seg_dir: str):
 
     df_display = df.copy()
 
-    def normalize_list_like(v):
+    def normalize_money_like(v):
         if v is None:
             return ""
         try:
@@ -135,20 +152,26 @@ def build_reconciliation_rows(despr_dir: str, trans_dir: str, seg_dir: str):
                     parts.append(str(int(x)))
                 except Exception:
                     parts.append(str(x))
-            return " ".join(parts)
+            raw_value = " ".join(parts)
+        else:
+            try:
+                if _np is not None and isinstance(v, _np.generic):
+                    raw_value = str(int(v))
+                elif isinstance(v, (int, float)):
+                    raw_value = str(int(v))
+                else:
+                    raw_value = str(v)
+            except Exception:
+                raw_value = str(v)
 
         try:
-            if _np is not None and isinstance(v, _np.generic):
-                return str(int(v))
-            if isinstance(v, (int, float)):
-                return str(int(v))
+            return payroll.PayrollReconciliationApp.formatear_valores(None, raw_value)
         except Exception:
-            pass
-        return str(v)
+            return raw_value
 
     for column in ["Neto_desprendibles", "Valores_transferencia", "Devengado", "IBC"]:
         if column in df_display.columns:
-            df_display[column] = df_display[column].apply(normalize_list_like)
+            df_display[column] = df_display[column].apply(normalize_money_like)
 
     return df_display, None
 
@@ -177,7 +200,7 @@ if mode == "validation":
                     st.info("No se encontraron datos para comparar.")
                 else:
                     df_display = pd.DataFrame(rows)
-                    st.dataframe(df_display, use_container_width=True)
+                    st.dataframe(style_estado_table(df_display), use_container_width=True, hide_index=True)
 
 else:
     despr_files = st.file_uploader("PDFs de desprendibles", type=["pdf"], accept_multiple_files=True)
@@ -211,6 +234,6 @@ else:
                     elif df_display.empty:
                         st.info("No se encontraron registros o diferencias.")
                     else:
-                        st.dataframe(df_display, use_container_width=True)
+                        st.dataframe(style_estado_table(df_display), use_container_width=True, hide_index=True)
                 except Exception as exc:
                     st.error(f"Procesamiento fallido: {exc}")
