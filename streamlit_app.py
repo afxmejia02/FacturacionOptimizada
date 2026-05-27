@@ -135,7 +135,7 @@ def build_reconciliation_rows(despr_dir: str, trans_dir: str, seg_dir: str):
 
     df_display = df.copy()
 
-    def normalize_list_like(v):
+    def normalize_money_like(v):
         if v is None:
             return ""
         try:
@@ -152,20 +152,26 @@ def build_reconciliation_rows(despr_dir: str, trans_dir: str, seg_dir: str):
                     parts.append(str(int(x)))
                 except Exception:
                     parts.append(str(x))
-            return " ".join(parts)
+            raw_value = " ".join(parts)
+        else:
+            try:
+                if _np is not None and isinstance(v, _np.generic):
+                    raw_value = str(int(v))
+                elif isinstance(v, (int, float)):
+                    raw_value = str(int(v))
+                else:
+                    raw_value = str(v)
+            except Exception:
+                raw_value = str(v)
 
         try:
-            if _np is not None and isinstance(v, _np.generic):
-                return str(int(v))
-            if isinstance(v, (int, float)):
-                return str(int(v))
+            return payroll.PayrollReconciliationApp.formatear_valores(None, raw_value)
         except Exception:
-            pass
-        return str(v)
+            return raw_value
 
     for column in ["Neto_desprendibles", "Valores_transferencia", "Devengado", "IBC"]:
         if column in df_display.columns:
-            df_display[column] = df_display[column].apply(normalize_list_like)
+            df_display[column] = df_display[column].apply(normalize_money_like)
 
     return df_display, None
 
