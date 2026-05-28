@@ -70,6 +70,34 @@ def style_estado_table(df_display: pd.DataFrame) -> pd.io.formats.style.Styler:
     return df_display.style.apply(row_style, axis=1)
 
 
+def build_colored_table(df_display: pd.DataFrame) -> str:
+    headers = list(df_display.columns)
+    parts = []
+    parts.append('<table class="table table-striped table-bordered">')
+    parts.append('<thead><tr>')
+    for h in headers:
+        parts.append(f'<th>{h}</th>')
+    parts.append('</tr></thead>')
+    parts.append('<tbody>')
+
+    for _, row in df_display.iterrows():
+        estado = str(row.get("Estado", "")).strip().lower()
+        if estado == "ok":
+            row_class = "table-success"
+        elif "ibc sin soporte" in estado:
+            row_class = "table-warning"
+        else:
+            row_class = "table-danger"
+        parts.append(f'<tr class="{row_class}">')
+        for h in headers:
+            val = row[h] if pd.notna(row[h]) else ""
+            parts.append(f'<td>{val}</td>')
+        parts.append('</tr>')
+
+    parts.append('</tbody></table>')
+    return "".join(parts)
+
+
 def build_validation_rows(pdf_path: str, excel_path: str, tipo: str):
     validator_obj = validator.ServicesValidationApp.__new__(validator.ServicesValidationApp)
     rows = []
@@ -219,7 +247,7 @@ if mode == "Pagos (Perfiles, Equipos, Servicios)":
                     st.info("No se encontraron datos para comparar.")
                 else:
                     df_display = pd.DataFrame(rows)
-                    st.dataframe(style_estado_table(df_display), use_container_width=True, hide_index=True)
+                    st.markdown(build_colored_table(df_display), unsafe_allow_html=True)
 
 elif mode == "Mapa de Cargos (Transferencias)":
     despr_files = st.file_uploader("PDFs de desprendibles", type=["pdf"], accept_multiple_files=True)
@@ -256,7 +284,7 @@ elif mode == "Mapa de Cargos (Transferencias)":
                         st.info("No se encontraron registros o diferencias.")
                     else:
                         st.subheader("Revisión Transferencias")
-                        st.dataframe(style_estado_table(df_display), use_container_width=True, hide_index=True)
+                        st.markdown(build_colored_table(df_display), unsafe_allow_html=True)
                 except Exception as exc:
                     st.error(f"Procesamiento fallido: {exc}")
 else:
@@ -294,6 +322,6 @@ else:
                         st.info("No se encontraron registros o diferencias.")
                     else:
                         st.subheader("Revisión Seguridad Social (IBC)")
-                        st.dataframe(style_estado_table(df_display), use_container_width=True, hide_index=True)
+                        st.markdown(build_colored_table(df_display), unsafe_allow_html=True)
                 except Exception as exc:
                     st.error(f"Procesamiento fallido: {exc}")
