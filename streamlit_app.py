@@ -26,12 +26,10 @@ def load_payroll_module():
 
 payroll = load_payroll_module()
 
-APP_VERSION = "streamlit-mapa-options-7f67d1a"
-
 
 st.set_page_config(page_title="Pagos y Mapa de Cargos", layout="wide")
 st.title("Pagos y Mapa de Cargos")
-st.caption(f"Pagos (Perfiles, Equipos, Servicios) y Mapa de Cargos - {APP_VERSION}")
+st.caption("Validación de PDFs contra Excel y conciliación de nómina")
 
 
 def format_count(value):
@@ -53,32 +51,15 @@ def format_count(value):
         return value
 
 
-def style_estado_table(df_display: pd.DataFrame) -> pd.io.formats.style.Styler:
-    def row_style(row: pd.Series):
-        estado = str(row.get("Estado", "")).strip().lower()
-        if estado == "ok":
-            color = "#d9f7d9"
-            text = "#166534"
-        elif "ibc sin soporte" in estado:
-            color = "#fff4cc"
-            text = "#8a5b00"
-        else:
-            color = "#ffd6d6"
-            text = "#8b1e1e"
-        return [f"background-color: {color}; color: {text};"] * len(row)
-
-    return df_display.style.apply(row_style, axis=1)
-
-
 def build_colored_table(df_display: pd.DataFrame) -> str:
     headers = list(df_display.columns)
     parts = []
     parts.append('<table class="table table-striped table-bordered">')
     parts.append('<thead><tr>')
     for h in headers:
-        parts.append(f'<th>{h}</th>')
-    parts.append('</tr></thead>')
-    parts.append('<tbody>')
+        parts.append(f"<th>{h}</th>")
+    parts.append("</tr></thead>")
+    parts.append("<tbody>")
 
     for _, row in df_display.iterrows():
         estado = str(row.get("Estado", "")).strip().lower()
@@ -91,10 +72,10 @@ def build_colored_table(df_display: pd.DataFrame) -> str:
         parts.append(f'<tr class="{row_class}">')
         for h in headers:
             val = row[h] if pd.notna(row[h]) else ""
-            parts.append(f'<td>{val}</td>')
-        parts.append('</tr>')
+            parts.append(f"<td>{val}</td>")
+        parts.append("</tr>")
 
-    parts.append('</tbody></table>')
+    parts.append("</tbody></table>")
     return "".join(parts)
 
 
@@ -116,10 +97,24 @@ def build_validation_rows(pdf_path: str, excel_path: str, tipo: str):
         )
 
         for perfil in pdf_perfiles:
-            pdf_cnt = format_count(conteo_pdf.get(perfil, 0))
+            pdf_raw = conteo_pdf.get(perfil, 0)
+            try:
+                if float(pdf_raw or 0) == 0:
+                    continue
+            except Exception:
+                pass
+
+            pdf_cnt = format_count(pdf_raw)
             excel_cnt = format_count(conteo_excel.get(perfil, 0))
             estado = "OK" if pdf_cnt == excel_cnt else "Valores diferentes"
-            rows.append({"Nivel/Perfil": perfil, "PDF": pdf_cnt, "Excel": excel_cnt, "Estado": estado})
+            rows.append(
+                {
+                    "Nivel/Perfil": perfil,
+                    "PDF": pdf_cnt,
+                    "Excel": excel_cnt,
+                    "Estado": estado,
+                }
+            )
 
         return rows, None
 
@@ -159,22 +154,27 @@ def build_reconciliation_rows(despr_dir: str, trans_dir: str, seg_dir: str, mode
     df_despr = payroll_obj._process_desprendibles(despr_dir)
     df_trans = None
     df_seg = None
+
     if mode == "transferencias":
         df_trans = payroll_obj._process_transferencia(trans_dir)
     elif mode == "seguridad":
         df_seg = payroll_obj.procesar_seguridad_social(seg_dir) if os.listdir(seg_dir) else None
+
     rec_result = payroll_obj._reconcile_data(df_despr, df_trans, df_seg)
     if isinstance(rec_result, tuple) and len(rec_result) >= 2:
         df_t, df_s = rec_result[0], rec_result[1]
     else:
         df_t, df_s = rec_result, pd.DataFrame()
-    if (df_t is None or df_t.empty) and (df_s is None or df_s.empty):
+
+    if mode == "transferencias":
+        df_display = df_t.copy() if df_t is not None else pd.DataFrame()
+    else:
+        df_display = df_s.copy() if df_s is not None else pd.DataFrame()
+
+    if df_display is None or df_display.empty:
         return pd.DataFrame(), None
 
-    df_t_display = df_t.copy() if df_t is not None else pd.DataFrame()
-    df_s_display = df_s.copy() if df_s is not None else pd.DataFrame()
-
-    def normalize_money_like(v):
+    def normalize_list_like(v):
         if v is None:
             return ""
         try:
@@ -191,32 +191,32 @@ def build_reconciliation_rows(despr_dir: str, trans_dir: str, seg_dir: str, mode
                     parts.append(str(int(x)))
                 except Exception:
                     parts.append(str(x))
-            raw_value = " ".join(parts)
-        else:
-            try:
-                if _np is not None and isinstance(v, _np.generic):
-                    raw_value = str(int(v))
-                elif isinstance(v, (int, float)):
-                    raw_value = str(int(v))
-                else:
-                    raw_value = str(v)
-            except Exception:
-                raw_value = str(v)
+            return " ".join(parts)
 
         try:
-            return payroll.PayrollReconciliationApp.formatear_valores(None, raw_value)
+            if _np is not None and isinstance(v, _np.generic):
+                return str(int(v))
+            if isinstance(v, (int, float)):
+                return str(int(v))
         except Exception:
-            return raw_value
+            pass
 
-    for column in ["Neto_desprendibles", "Valores_transferencia", "Devengado", "IBC"]:
-        if column in df_t_display.columns:
-            df_t_display[column] = df_t_display[column].apply(normalize_money_like)
-        if column in df_s_display.columns:
-            df_s_display[column] = df_s_display[column].apply(normalize_money_like)
+        return str(v)
 
-    if mode == "transferencias":
-        return df_t_display, None
-    return df_s_display, None
+    list_cols = [c for c in ["Neto_desprendibles", "Valores_transferencia", "Devengado", "IBC"]]
+    df_tmp = df_display.copy()
+
+    for col in [c for c in list_cols if c in df_tmp.columns]:
+        def fmt_cell(x):
+            s = normalize_list_like(x)
+            try:
+                return payroll_obj.formatear_valores(s)
+            except Exception:
+                return s
+
+        df_tmp[col] = df_tmp[col].apply(fmt_cell)
+
+    return df_tmp, None
 
 
 mode = st.radio(
@@ -283,7 +283,6 @@ elif mode == "Mapa de Cargos (Transferencias)":
                     elif df_display is None or df_display.empty:
                         st.info("No se encontraron registros o diferencias.")
                     else:
-                        st.subheader("Revisión Transferencias")
                         st.markdown(build_colored_table(df_display), unsafe_allow_html=True)
                 except Exception as exc:
                     st.error(f"Procesamiento fallido: {exc}")
@@ -321,7 +320,6 @@ else:
                     elif df_display is None or df_display.empty:
                         st.info("No se encontraron registros o diferencias.")
                     else:
-                        st.subheader("Revisión Seguridad Social (IBC)")
                         st.markdown(build_colored_table(df_display), unsafe_allow_html=True)
                 except Exception as exc:
                     st.error(f"Procesamiento fallido: {exc}")
