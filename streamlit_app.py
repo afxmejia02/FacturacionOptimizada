@@ -236,12 +236,17 @@ elif mode == "Mapa de Cargos (Transferencias)":
                     (dir_trans / file_obj.name).write_bytes(file_obj.getbuffer())
 
                 try:
-                    df_t_display, df_s_display, error = build_reconciliation_rows(
+                    result = build_reconciliation_rows(
                         str(dir_despr),
                         str(dir_trans),
                         str(dir_seg),
                         "transferencias",
                     )
+                    if isinstance(result, tuple) and len(result) == 2:
+                        df_t_display, error = result
+                        df_s_display = pd.DataFrame()
+                    else:
+                        df_t_display, df_s_display, error = result
                     if error:
                         st.warning(error)
                     elif df_t_display is None or df_t_display.empty:
@@ -274,12 +279,17 @@ else:
                     (dir_seg / file_obj.name).write_bytes(file_obj.getbuffer())
 
                 try:
-                    df_t_display, df_s_display, error = build_reconciliation_rows(
+                    result = build_reconciliation_rows(
                         str(dir_despr),
                         str(dir_trans),
                         str(dir_seg),
                         "seguridad",
                     )
+                    if isinstance(result, tuple) and len(result) == 2:
+                        df_s_display, error = result
+                        df_t_display = pd.DataFrame()
+                    else:
+                        df_t_display, df_s_display, error = result
                     if error:
                         st.warning(error)
                     elif df_s_display is None or df_s_display.empty:
