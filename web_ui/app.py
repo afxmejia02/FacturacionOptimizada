@@ -25,25 +25,31 @@ from facturacion import gui_validation_app as validator
 def _build_colored_table(df_display: pd.DataFrame) -> str:
     headers = list(df_display.columns)
     parts = []
-    parts.append('<table class="table table-striped table-bordered">')
+    parts.append(
+        '<table style="width:100%; border-collapse:collapse; font-family:Arial,sans-serif;">'
+    )
     parts.append('<thead><tr>')
     for header in headers:
-        parts.append(f'<th>{header}</th>')
+        parts.append(
+            '<th style="border:1px solid #ddd; padding:8px; text-align:left; background:#f4f4f4;">'
+            f"{header}</th>"
+        )
     parts.append('</tr></thead>')
     parts.append('<tbody>')
 
     for _, row in df_display.iterrows():
         estado = str(row.get("Estado", "")).strip().lower()
         if estado == "ok":
-            row_class = "table-success"
-        elif "ibc sin soporte" in estado:
-            row_class = "table-warning"
+            row_style = "background-color:#d4edda; color:#155724;"
         else:
-            row_class = "table-danger"
-        parts.append(f'<tr class="{row_class}">')
+            row_style = "background-color:#f8d7da; color:#721c24;"
+        parts.append(f'<tr style="{row_style}">')
         for header in headers:
             value = row[header] if pd.notna(row[header]) else ""
-            parts.append(f'<td>{value}</td>')
+            parts.append(
+                '<td style="border:1px solid #ddd; padding:8px; vertical-align:top;">'
+                f"{value}</td>"
+            )
         parts.append('</tr>')
 
     parts.append('</tbody></table>')
