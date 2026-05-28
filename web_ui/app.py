@@ -10,6 +10,7 @@ import importlib.util
 import os
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 
 import pandas as pd
@@ -20,6 +21,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from facturacion import gui_validation_app as validator
+
+
+DEBUG_MODE = os.environ.get("VALIDATION_DEBUG", "1") == "1"
+
+
+def _debug_print(message: str):
+    if DEBUG_MODE:
+        print(f"[DEBUG][web_ui] {message}")
 
 
 def _build_colored_table(df_display: pd.DataFrame) -> str:
@@ -123,6 +132,165 @@ def _format_dataframe(df_in: pd.DataFrame, formatter) -> pd.DataFrame:
     return df_tmp
 
 
+def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
+    registros = []
+    excluded_profiles = {"none", "incapacidad", "observaciones"}
+
+    validator_obj = validator.ServicesValidationApp.__new__(validator.ServicesValidationApp)
+    with tempfile.TemporaryDirectory(prefix="web_ui_perfiles_") as _tmp_dir:
+        with open(pdf_path, "rb") as pdf_handle:
+            pdf_bytes = pdf_handle.read()
+
+        tmp_pdf_path = os.path.join(_tmp_dir, "upload.pdf")
+        with open(tmp_pdf_path, "wb") as temp_pdf:
+            temp_pdf.write(pdf_bytes)
+
+        import pdfplumber
+
+        with pdfplumber.open(tmp_pdf_path) as pdf:
+            for page in pdf.pages:
+                for tabla in page.extract_tables() or []:
+                    if not tabla or len(tabla) <= 7:
+                        continue
+
+                    header = tabla[6]
+                    header_norm = [validator_obj._normalizar_busqueda(celda).replace(" ", "") if celda else "" for celda in header]
+                    if "nivel/perfil" not in header_norm:
+                        continue
+
+                    idx_perfil = header_norm.index("nivel/perfil")
+                    fecha_detectada = None
+                    if header:
+                        fecha_detectada = validator_obj._normalizar_fecha(header[-1])
+
+                    if fecha_detectada is None:
+                        continue
+
+                    for row in tabla[7:]:
+                        if len(row) <= idx_perfil:
+                            continue
+
+                        perfil = row[idx_perfil]
+                        observacion = row[-1]
+                        perfil_norm = None
+
+                        tabla_info = ""
+                        try:
+                            tabla_info = str(tabla[4][2])
+                        except Exception:
+                            tabla_info = ""
+
+                        tabla_info_upper = tabla_info.upper()
+                        if "GLOBAL" in tabla_info_upper or "NO FACTURABLE" in tabla_info_upper:
+                            continue
+
+                        if isinstance(perfil, str) and observacion == "":
+                            perfil = perfil.strip()
+                            if perfil:
+                                perfil_norm = validator_obj._normalizar_perfil(perfil)
+                        elif observacion != "":
+                            perfil = str(observacion).split()[-1]
+                            if perfil:
+                                perfil_norm = validator_obj._normalizar_perfil(perfil)
+
+                        if not perfil_norm:
+                            continue
+
+                        if str(perfil_norm).strip().lower() in excluded_profiles:
+                            continue
+
+                        cantidad = 1 / 3 if "24" in tabla_info else 1
+                        registros.append(
+                            {
+                                "FECHA": fecha_detectada,
+                                "PERFIL_NORM": perfil_norm,
+                                "Nivel/Perfil": perfil_norm,
+                                "PDF": cantidad,
+                            }
+                        )
+
+    if not registros:
+        _debug_print("No se extrajeron registros de perfiles por fecha desde el PDF.")
+        return pd.DataFrame(columns=["FECHA", "PERFIL_NORM", "Nivel/Perfil", "PDF"])
+
+    df = pd.DataFrame(registros)
+    _debug_print(f"Registros de perfiles por fecha extraidos: {len(df)}")
+    return df.groupby(["FECHA", "PERFIL_NORM", "Nivel/Perfil"], as_index=False)["PDF"].sum()
+
+
+def _build_perfiles_table(pdf_source, excel_source) -> pd.DataFrame:
+    with tempfile.TemporaryDirectory(prefix="web_ui_perfiles_table_") as tmp_dir:
+        pdf_path = os.path.join(tmp_dir, "upload.pdf")
+        excel_path = os.path.join(tmp_dir, "upload.xlsx")
+
+        if hasattr(pdf_source, "getbuffer"):
+            with open(pdf_path, "wb") as pdf_handle:
+                pdf_handle.write(pdf_source.getbuffer())
+        else:
+            pdf_path = str(pdf_source)
+
+        if hasattr(excel_source, "getbuffer"):
+            with open(excel_path, "wb") as excel_handle:
+                excel_handle.write(excel_source.getbuffer())
+        else:
+            excel_path = str(excel_source)
+
+        df_pdf = _extract_perfiles_by_date(pdf_path)
+        df_excel = _extract_excel_perfiles_by_date(excel_path)
+
+        if df_pdf.empty:
+            return pd.DataFrame(columns=["Fecha", "Nivel/Perfil", "PDF", "Excel", "Estado"])
+
+        if df_excel.empty:
+            return pd.DataFrame(columns=["Fecha", "Nivel/Perfil", "PDF", "Excel", "Estado"])
+
+        df_merge = df_pdf.merge(
+            df_excel,
+            on=["FECHA", "PERFIL_NORM", "Nivel/Perfil"],
+            how="outer",
+        )
+        df_merge["PDF"] = df_merge["PDF"].fillna(0)
+        df_merge["Excel"] = df_merge["Excel"].fillna(0)
+
+        def _estado(row):
+            return "OK" if row["PDF"] == row["Excel"] else "Valores diferentes"
+
+        df_merge["Estado"] = df_merge.apply(_estado, axis=1)
+        df_merge = df_merge.rename(columns={"FECHA": "Fecha"})
+        df_merge["Fecha"] = pd.to_datetime(df_merge["Fecha"], errors="coerce").dt.strftime("%Y-%m-%d")
+        df_merge = df_merge[~df_merge["Nivel/Perfil"].astype(str).str.strip().str.lower().isin({"none", "incapacidad", "observaciones"})].copy()
+        df_merge = df_merge[["Fecha", "Nivel/Perfil", "PDF", "Excel", "Estado"]]
+        df_merge = df_merge.sort_values(["Fecha", "Nivel/Perfil"]).reset_index(drop=True)
+        return df_merge
+
+
+def _extract_excel_perfiles_by_date(excel_path: str) -> pd.DataFrame:
+    validator_obj = validator.ServicesValidationApp.__new__(validator.ServicesValidationApp)
+    excluded_profiles = {"none", "incapacidad", "observaciones"}
+    df_hist = pd.read_excel(excel_path)
+    if "DESCRIPCION TARIFA" not in df_hist.columns:
+        raise KeyError("El archivo Excel no contiene la columna 'DESCRIPCION TARIFA'.")
+
+    df_niveles = df_hist[df_hist["DESCRIPCION TARIFA"].notna()].copy()
+    df_niveles = df_niveles[df_niveles["DESCRIPCION TARIFA"].astype(str).str.contains("Nivel|Perfil", na=False)].copy()
+
+    cols_fecha = [col for col in df_niveles.columns if isinstance(col, (pd.Timestamp, __import__("datetime").datetime))]
+    if not cols_fecha:
+        raise ValueError("No se detectaron columnas de fecha en el archivo Excel.")
+
+    cols_id = [col for col in df_niveles.columns if col not in cols_fecha]
+    df_largo = df_niveles.melt(id_vars=cols_id, value_vars=cols_fecha, var_name="FECHA", value_name="VALOR")
+    df_largo["FECHA"] = pd.to_datetime(df_largo["FECHA"], errors="coerce").dt.normalize()
+    df_largo = df_largo[df_largo["VALOR"].notna()].copy()
+    df_largo = df_largo[df_largo["VALOR"] != 0].copy()
+    df_largo["PERFIL_NORM"] = df_largo["DESCRIPCION TARIFA"].apply(validator_obj._normalizar_perfil)
+    df_largo = df_largo[~df_largo["PERFIL_NORM"].astype(str).str.strip().str.lower().isin(excluded_profiles)].copy()
+    df_largo["Nivel/Perfil"] = df_largo["PERFIL_NORM"]
+    df_largo = df_largo.groupby(["FECHA", "PERFIL_NORM", "Nivel/Perfil"], as_index=False)["VALOR"].sum()
+    df_largo = df_largo.rename(columns={"VALOR": "Excel"})
+    return df_largo
+
+
 def _load_payroll_module():
     payroll_path = ROOT / "mapa-de-cargos" / "gui_app.py"
     if not payroll_path.exists():
@@ -136,6 +304,7 @@ def _load_payroll_module():
 
 
 def _process_pagos(pdf_file, excel_file, tipo):
+    _debug_print(f"Inicio _process_pagos. tipo={tipo}, pdf={getattr(pdf_file, 'name', 'N/A')}, excel={getattr(excel_file, 'name', 'N/A')}")
     validator_obj = validator.ServicesValidationApp.__new__(validator.ServicesValidationApp)
 
     with tempfile.TemporaryDirectory(prefix="web_ui_") as tmp_dir:
@@ -150,37 +319,10 @@ def _process_pagos(pdf_file, excel_file, tipo):
         rows = []
 
         if tipo == "perfiles":
-            conteo_pdf, fecha = validator_obj._extraer_perfiles_pdf(pdf_path)
-            if not conteo_pdf:
-                return None, "No se encontraron perfiles en el PDF."
-
-            conteo_excel = validator_obj._extraer_conteo_excel_perfiles(excel_path, fecha)
-            excluded_profiles = {"none", "incapacidad", "observaciones"}
-            pdf_perfiles = sorted(
-                perfil
-                for perfil, cantidad in conteo_pdf.items()
-                if str(perfil).strip().lower() not in excluded_profiles and float(cantidad or 0) > 0
-            )
-
-            for perfil in pdf_perfiles:
-                pdf_raw = conteo_pdf.get(perfil, 0)
-                try:
-                    if float(pdf_raw or 0) == 0:
-                        continue
-                except Exception:
-                    pass
-
-                pdf_cnt = _format_count(pdf_raw)
-                excel_cnt = _format_count(conteo_excel.get(perfil, 0))
-                estado = "OK" if pdf_cnt == excel_cnt else "Valores diferentes"
-                rows.append(
-                    {
-                        "Nivel/Perfil": perfil,
-                        "PDF": pdf_cnt,
-                        "Excel": excel_cnt,
-                        "Estado": estado,
-                    }
-                )
+            df_display = _build_perfiles_table(pdf_path, excel_path)
+            _debug_print(f"Tabla perfiles construida. filas={len(df_display)}")
+            if df_display.empty:
+                return None, "No se encontraron perfiles en el PDF o no fue posible cruzarlos por fecha."
         else:
             df_pdf = validator_obj._extraer_conteo_pdf(pdf_path, tipo)
             if df_pdf is None or df_pdf.empty:
@@ -210,11 +352,15 @@ def _process_pagos(pdf_file, excel_file, tipo):
                         }
                     )
 
-        df_display = pd.DataFrame(rows)
+        if tipo != "perfiles":
+            df_display = pd.DataFrame(rows)
+
         if df_display.empty:
+            _debug_print("No hay datos para comparar en _process_pagos.")
             return None, "No se encontraron datos para comparar."
 
         table_html = _build_colored_table(df_display)
+        _debug_print(f"Tabla final construida en _process_pagos. filas={len(df_display)}")
         return table_html, None
 
 
@@ -286,6 +432,11 @@ def main():
     st.title("Sistema de validación y conciliación")
     st.write("Carga tus archivos para comparar PDF contra Excel o para conciliar desprendibles, transferencias y seguridad social.")
 
+    if "perfiles_result_df" not in st.session_state:
+        st.session_state.perfiles_result_df = None
+    if "perfiles_result_ready" not in st.session_state:
+        st.session_state.perfiles_result_ready = False
+
     app_choice = st.radio(
         "Selecciona la herramienta",
         ["pagos", "mapa_transferencias", "mapa_seguridad"],
@@ -317,10 +468,34 @@ def main():
                         table_html, message = _process_pagos(pdf_file, excel_file, tipo)
                     if message:
                         st.info(message)
-                    elif table_html:
+                        st.session_state.perfiles_result_df = None
+                        st.session_state.perfiles_result_ready = False
+                    elif table_html and tipo != "perfiles":
                         st.markdown(table_html, unsafe_allow_html=True)
+                    elif tipo != "perfiles":
+                        st.session_state.perfiles_result_df = None
+                        st.session_state.perfiles_result_ready = False
                 except Exception as exc:
+                    print("[ERROR][web_ui] Procesamiento fallido en pagos")
+                    traceback.print_exc()
+                    st.session_state.perfiles_result_df = None
+                    st.session_state.perfiles_result_ready = False
                     st.error(f"Procesamiento fallido: {exc}")
+
+                if tipo == "perfiles" and pdf_file and excel_file:
+                    try:
+                        with st.spinner("Construyendo tabla por fechas..."):
+                            st.session_state.perfiles_result_df = _build_perfiles_table(
+                                pdf_file,
+                                excel_file,
+                            )
+                            st.session_state.perfiles_result_ready = True
+                    except Exception as exc:
+                        print("[ERROR][web_ui] Construccion de tabla por fecha fallida")
+                        traceback.print_exc()
+                        st.session_state.perfiles_result_df = None
+                        st.session_state.perfiles_result_ready = False
+                        st.error(f"No se pudo construir la tabla por fecha: {exc}")
 
         else:
             recon_mode = "transfers" if app_choice == "mapa_transferencias" else "seguridad"
@@ -369,7 +544,25 @@ def main():
                             st.subheader(title)
                             st.markdown(table_html, unsafe_allow_html=True)
                 except Exception as exc:
+                    print("[ERROR][web_ui] Procesamiento de conciliacion fallido")
+                    traceback.print_exc()
                     st.error(f"Procesamiento de conciliación falló: {exc}")
+
+    if st.session_state.perfiles_result_ready and isinstance(st.session_state.perfiles_result_df, pd.DataFrame):
+        df_perfiles = st.session_state.perfiles_result_df
+        if not df_perfiles.empty:
+            st.subheader("Resultados por fecha")
+            available_dates = sorted(df_perfiles["Fecha"].dropna().astype(str).unique().tolist())
+            selected_date = st.selectbox(
+                "Filtrar por fecha",
+                ["Todas las fechas"] + available_dates,
+                key="perfiles_date_filter",
+            )
+
+            if selected_date != "Todas las fechas":
+                df_perfiles = df_perfiles[df_perfiles["Fecha"].astype(str) == selected_date].copy()
+
+            st.markdown(_build_colored_table(df_perfiles), unsafe_allow_html=True)
 
 
 if __name__ == "__main__":

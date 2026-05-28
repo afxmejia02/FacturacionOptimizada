@@ -8,8 +8,10 @@ y muestra solo las diferencias. Las filas con discrepancias se resaltan en rojo.
 from __future__ import annotations
 
 import datetime as dt
+import os
 import re
 import threading
+import traceback
 import unicodedata
 from collections import Counter
 
@@ -39,8 +41,13 @@ class ServicesValidationApp:
         self.pdf_path = tk.StringVar()
         self.tipo_extraccion = tk.StringVar(value="equipos")
         self.df_resultado = None
+        self.debug_mode = os.environ.get("VALIDATION_DEBUG", "1") == "1"
 
         self._create_ui()
+
+    def _debug_print(self, message):
+        if self.debug_mode:
+            print(f"[DEBUG][ServicesValidationApp] {message}")
 
     def _create_ui(self):
         header_frame = ttk.Frame(self.root)
@@ -155,9 +162,11 @@ class ServicesValidationApp:
     def _process_files_thread(self):
         try:
             tipo = self.tipo_extraccion.get().lower()
+            self._debug_print(f"Inicio de procesamiento. tipo={tipo}, pdf={self.pdf_path.get()}, excel={self.excel_path.get()}")
 
             if tipo == "perfiles":
                 conteo_pdf, fecha_reporte = self._extraer_perfiles_pdf(self.pdf_path.get())
+                self._debug_print(f"Perfiles extraidos del PDF: {len(conteo_pdf)} perfiles, fecha_reporte={fecha_reporte}")
                 if not conteo_pdf:
                     self.root.after(
                         0,
@@ -170,7 +179,9 @@ class ServicesValidationApp:
                     return
 
                 conteo_excel = self._extraer_conteo_excel_perfiles(self.excel_path.get(), fecha_reporte)
+                self._debug_print(f"Perfiles extraidos del Excel para fecha {fecha_reporte}: {len(conteo_excel)}")
                 self.df_resultado = self._comparar_conteos_perfiles(conteo_pdf, conteo_excel)
+                self._debug_print(f"Diferencias encontradas (perfiles): {len(self.df_resultado)}")
 
                 if self.df_resultado.empty:
                     self.root.after(0, lambda: self._show_custom_ok_message(
@@ -187,6 +198,7 @@ class ServicesValidationApp:
                 return
 
             df_pdf = self._extraer_conteo_pdf(self.pdf_path.get(), tipo)
+            self._debug_print(f"Registros PDF extraidos para tipo {tipo}: {0 if df_pdf is None else len(df_pdf)}")
             if df_pdf is None or df_pdf.empty:
                 self.root.after(
                     0,
@@ -199,6 +211,7 @@ class ServicesValidationApp:
                 return
 
             self.df_resultado = self._comparar_conteos(df_pdf, self.excel_path.get())
+            self._debug_print(f"Diferencias encontradas ({tipo}): {len(self.df_resultado)}")
             if self.df_resultado.empty or self.df_resultado["Diferencia"].sum() == 0:
                 self.root.after(0, self._show_all_ok_message)
                 self.root.after(0, lambda: self.status_label.config(text="Validación completa. ¡Todo correcto!", foreground="green"))
@@ -209,6 +222,8 @@ class ServicesValidationApp:
                     foreground="red",
                 ))
         except Exception as exc:
+            print("[ERROR][ServicesValidationApp] Procesamiento fallido")
+            traceback.print_exc()
             self.root.after(0, lambda: messagebox.showerror("Error", f"Procesamiento fallido:\n{exc}"))
             self.root.after(0, lambda: self.status_label.config(text="Procesamiento fallido", foreground="red"))
 
@@ -335,6 +350,7 @@ class ServicesValidationApp:
                         continue
 
                     header = tabla[6]
+                    
                     header_norm = [self._normalizar_busqueda(celda).replace(" ", "") if celda else "" for celda in header]
                     if "nivel/perfil" not in header_norm:
                         continue
@@ -344,23 +360,29 @@ class ServicesValidationApp:
                         fecha_detectada = self._normalizar_fecha(header[-1])
                         if fecha_detectada is not None:
                             fecha_reporte = fecha_detectada
-
+                    tabla_info = str(tabla[4][2])
                     for row in tabla[7:]:
                         if len(row) <= idx_perfil:
                             continue
                         perfil = row[idx_perfil]
                         observacion = row[-1]
+                        
+                        tabla_info_upper = self._normalizar_busqueda(tabla_info).upper()
+                        if "GLOBAL" in tabla_info_upper or "NO FACTURABLE" in tabla_info_upper:
+                            continue
+
+                        cantidad = 1 / 3 if "24" in tabla_info else 1
 
                         if isinstance(perfil, str) and observacion == "":
                             perfil = perfil.strip()
                             if perfil:
-                                conteo[self._normalizar_perfil(perfil)] += 1 / 3 if "24" in str(tabla[4][1]) else 1
-
+                                conteo[self._normalizar_perfil(perfil)] += cantidad
+                                
                         if observacion != "":
                             perfil = str(observacion).split()[-1]
                             if perfil:
-                                conteo[self._normalizar_perfil(perfil)] += 1 / 3 if "24" in str(tabla[4][1]) else 1
-
+                                conteo[self._normalizar_perfil(perfil)] += cantidad
+                                             
         return conteo, fecha_reporte
 
     def _extraer_conteo_pdf_detallado(self, path_planilla, tipo_formato):

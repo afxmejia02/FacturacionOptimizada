@@ -43,7 +43,7 @@ class PayrollReconciliationApp:
         df_resultado (pd.DataFrame): Final reconciliation results
     """
     
-    def __init__(self, root):
+    def __init__(self, root, mode="both"):
         """Inicializa la aplicación."""
         self.root = root
         self.root.title("Sistema de Conciliación de Nómina")
@@ -56,6 +56,8 @@ class PayrollReconciliationApp:
         
         # DataFrame de resultados
         self.df_resultado = None
+        # mode can be 'both', 'transfers', or 'seguridad'
+        self.mode = mode
         
         # Configurar la interfaz
         self._create_ui()
@@ -125,49 +127,85 @@ class PayrollReconciliationApp:
         # ===== RESULTS FRAME =====
         results_frame = ttk.LabelFrame(self.root, text="Resultados", padding=10)
         results_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        
-        # Crear Treeview para mostrar resultados
-        self.tree = ttk.Treeview(
-            results_frame,
-            columns=("Identificación", "Cuenta", "Estado", "Neto_desprendibles", "Valores_transferencia", "Devengado", "IBC"),
-            height=20,
-            show="headings"
-        )
-        
-        # Define column headings and widths
-        self.tree.heading("Identificación", text="Identificación")
-        self.tree.heading("Cuenta", text="Cuenta")
-        self.tree.heading("Estado", text="Estado")
-        self.tree.heading("Neto_desprendibles", text="Valores desprendibles")
-        self.tree.heading("Valores_transferencia", text="Valores de transferencia")
-        self.tree.heading("Devengado", text="Devengado")
-        self.tree.heading("IBC", text="IBC")
-        
-        self.tree.column("Identificación", width=150, anchor=tk.CENTER)
-        self.tree.column("Cuenta", width=150, anchor=tk.CENTER)
-        self.tree.column("Estado", width=200, anchor=tk.CENTER)
-        self.tree.column("Neto_desprendibles", width=250, anchor=tk.W)
-        self.tree.column("Valores_transferencia", width=250, anchor=tk.W)
-        self.tree.column("Devengado", width=200, anchor=tk.W)
-        self.tree.column("IBC", width=200, anchor=tk.W)
-        
-        # Agregar barras de desplazamiento
-        vsb = ttk.Scrollbar(results_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        hsb = ttk.Scrollbar(results_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
-        self.tree.configure(yscroll=vsb.set, xscroll=hsb.set)
-        
-        # Distribución del Treeview y las barras
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        hsb.grid(row=1, column=0, sticky="ew")
-        
-        results_frame.grid_rowconfigure(0, weight=1)
+
+        # Create frames and treeviews depending on mode
         results_frame.grid_columnconfigure(0, weight=1)
-        
-        # Configurar etiquetas de color
-        self.tree.tag_configure("error", background="#ffcccc", foreground="darkred")
-        self.tree.tag_configure("ok", background="#ccffcc", foreground="darkgreen")
-        self.tree.tag_configure("warning", background="#ffffcc", foreground="darkorange")
+
+        self.tree_transfers = None
+        self.tree_seguridad = None
+
+        if self.mode in ("both", "transfers"):
+            transfers_frame = ttk.LabelFrame(results_frame, text="Revisión Transferencias", padding=5)
+            transfers_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+            results_frame.grid_rowconfigure(0, weight=1)
+
+            self.tree_transfers = ttk.Treeview(
+                transfers_frame,
+                columns=("Identificación", "Cuenta", "Estado", "Neto_desprendibles", "Valores_transferencia"),
+                height=10,
+                show="headings"
+            )
+
+            self.tree_transfers.heading("Identificación", text="Identificación")
+            self.tree_transfers.heading("Cuenta", text="Cuenta")
+            self.tree_transfers.heading("Estado", text="Estado")
+            self.tree_transfers.heading("Neto_desprendibles", text="Valores desprendibles")
+            self.tree_transfers.heading("Valores_transferencia", text="Valores de transferencia")
+
+            self.tree_transfers.column("Identificación", width=150, anchor=tk.CENTER)
+            self.tree_transfers.column("Cuenta", width=150, anchor=tk.CENTER)
+            self.tree_transfers.column("Estado", width=200, anchor=tk.CENTER)
+            self.tree_transfers.column("Neto_desprendibles", width=300, anchor=tk.W)
+            self.tree_transfers.column("Valores_transferencia", width=300, anchor=tk.W)
+
+            vsb_t = ttk.Scrollbar(transfers_frame, orient=tk.VERTICAL, command=self.tree_transfers.yview)
+            hsb_t = ttk.Scrollbar(transfers_frame, orient=tk.HORIZONTAL, command=self.tree_transfers.xview)
+            self.tree_transfers.configure(yscroll=vsb_t.set, xscroll=hsb_t.set)
+            self.tree_transfers.grid(row=0, column=0, sticky="nsew")
+            vsb_t.grid(row=0, column=1, sticky="ns")
+            hsb_t.grid(row=1, column=0, sticky="ew")
+            transfers_frame.grid_rowconfigure(0, weight=1)
+            transfers_frame.grid_columnconfigure(0, weight=1)
+
+        if self.mode in ("both", "seguridad"):
+            seguridad_frame = ttk.LabelFrame(results_frame, text="Revisión Seguridad Social (IBC)", padding=5)
+            row_idx = 1 if self.mode == "both" else 0
+            seguridad_frame.grid(row=row_idx, column=0, sticky="nsew", padx=5, pady=5)
+            results_frame.grid_rowconfigure(row_idx, weight=1)
+
+            self.tree_seguridad = ttk.Treeview(
+                seguridad_frame,
+                columns=("Identificación", "Estado", "Devengado", "IBC"),
+                height=10,
+                show="headings"
+            )
+
+            self.tree_seguridad.heading("Identificación", text="Identificación")
+            self.tree_seguridad.heading("Estado", text="Estado")
+            self.tree_seguridad.heading("Devengado", text="Devengado")
+            self.tree_seguridad.heading("IBC", text="IBC")
+
+            self.tree_seguridad.column("Identificación", width=150, anchor=tk.CENTER)
+            self.tree_seguridad.column("Estado", width=250, anchor=tk.CENTER)
+            self.tree_seguridad.column("Devengado", width=200, anchor=tk.W)
+            self.tree_seguridad.column("IBC", width=300, anchor=tk.W)
+
+            vsb_s = ttk.Scrollbar(seguridad_frame, orient=tk.VERTICAL, command=self.tree_seguridad.yview)
+            hsb_s = ttk.Scrollbar(seguridad_frame, orient=tk.HORIZONTAL, command=self.tree_seguridad.xview)
+            self.tree_seguridad.configure(yscroll=vsb_s.set, xscroll=hsb_s.set)
+            self.tree_seguridad.grid(row=0, column=0, sticky="nsew")
+            vsb_s.grid(row=0, column=1, sticky="ns")
+            hsb_s.grid(row=1, column=0, sticky="ew")
+            seguridad_frame.grid_rowconfigure(0, weight=1)
+            seguridad_frame.grid_columnconfigure(0, weight=1)
+
+        # Configurar etiquetas de color para ambas tablas (si existen)
+        for t in (self.tree_transfers, self.tree_seguridad):
+            if t is None:
+                continue
+            t.tag_configure("error", background="#ffcccc", foreground="darkred")
+            t.tag_configure("ok", background="#ccffcc", foreground="darkgreen")
+            t.tag_configure("warning", background="#ffffcc", foreground="darkorange")
         
     def _select_desprendibles_folder(self):
         """Open folder selection dialog for payslips."""
@@ -225,12 +263,19 @@ class PayrollReconciliationApp:
                 df_seguridad = pd.DataFrame()
             
             # Conciliar datos (incluye Devengado e IBC si están disponibles)
-            self.df_resultado = self._reconcile_data(df_desprendibles, df_transferencia, df_seguridad)
-            
+            df_transfers, df_seguridad_res = self._reconcile_data(df_desprendibles, df_transferencia, df_seguridad)
+            self.df_resultado_transfers = df_transfers
+            self.df_resultado_seguridad = df_seguridad_res
+
             # Actualizar la interfaz en el hilo principal
             self.root.after(0, self._display_results)
+            total = 0
+            try:
+                total = len(self.df_resultado_transfers) + len(self.df_resultado_seguridad)
+            except Exception:
+                total = 0
             self.root.after(0, lambda: self.status_label.config(
-                text=f"Proceso completado. Se encontraron {len(self.df_resultado)} registros.",
+                text=f"Proceso completado. Se encontraron {total} registros.",
                 foreground="green"
             ))
             
@@ -712,6 +757,8 @@ class PayrollReconciliationApp:
             return normalizados
 
         resultados = []
+        resultados_transfers = []
+        resultados_seguridad = []
 
         # Limpiar números de documento
         if df_desprendibles is None or df_desprendibles.empty:
@@ -729,7 +776,7 @@ class PayrollReconciliationApp:
 
         # Agrupar desprendibles por identificación y conciliar con transferencias
         for doc, grupo_despr in df_desprendibles.groupby("Identificacion"):
-            netos = set(_normalizar_lista(grupo_despr["Neto"].dropna().tolist()))
+            netos = _normalizar_lista(grupo_despr["Neto"].dropna().tolist())
             # Devengado: tomar valores únicos (puede haber varios)
             devs = _normalizar_lista(grupo_despr["Devengado"].dropna().tolist()) if "Devengado" in grupo_despr else []
             sum_devs = _normalizar_numero(sum(devs)) if devs else None
@@ -741,9 +788,10 @@ class PayrollReconciliationApp:
 
             cta = grupo_despr["Cuenta"].iloc[0] if "Cuenta" in grupo_despr.columns else None
 
-            # Buscar transferencias coincidentes
+            # Buscar transferencias coincidentes y comparar por suma
             grupo_trans = pd.DataFrame()
-            estado = "Transferencia no encontrada"
+            estado_trans = "Transferencia no encontrada"
+            valores_trans = []
             if df_transferencia is not None and not df_transferencia.empty:
                 grupo_trans = df_transferencia[
                     (df_transferencia["Documento"] == doc) |
@@ -751,11 +799,21 @@ class PayrollReconciliationApp:
                 ]
 
             if not grupo_trans.empty:
-                valores_trans = set(_normalizar_lista(grupo_trans["Valor"].dropna().tolist()))
-                if len(netos.intersection(valores_trans)) > 0:
-                    estado = "OK"
+                valores_trans = _normalizar_lista(grupo_trans["Valor"].dropna().tolist())
+                # Sumar valores y comparar con la suma de netos
+                try:
+                    suma_netos = _normalizar_numero(sum(netos)) if netos else None
+                except Exception:
+                    suma_netos = None
+                try:
+                    suma_trans = _normalizar_numero(sum(valores_trans)) if valores_trans else None
+                except Exception:
+                    suma_trans = None
+
+                if suma_netos is not None and suma_trans is not None and suma_netos == suma_trans:
+                    estado_trans = "OK"
                 else:
-                    estado = "Valor no coincide"
+                    estado_trans = "Valor no coincide"
             else:
                 valores_trans = None
 
@@ -766,117 +824,163 @@ class PayrollReconciliationApp:
                 if not matches.empty:
                     ibc_vals = _normalizar_lista(matches["ibc"].dropna().tolist())
 
-            if estado == "OK":
-                if sum_devs is None:
-                    estado = "Devengado no encontrado"
-                elif not ibc_vals or sum_devs not in ibc_vals:
-                    estado = "Devengado no coincide"
-                elif len(ibc_vals) > 1:
-                    estado = "IBC sin soporte"
-            elif estado == "Valor no coincide":
-                if sum_devs is None:
-                    estado = "Valor no coincide - Devengado no encontrado"
-                elif not ibc_vals or sum_devs not in ibc_vals:
-                    estado = "Valor no coincide - Devengado no coincide"
-                elif len(ibc_vals) > 1:
-                    estado = "Valor no coincide - IBC sin soporte"
-            elif estado == "Transferencia no encontrada":
-                if sum_devs is None:
-                    estado = "Transferencia no encontrada - Devengado no encontrado"
-                elif not ibc_vals or sum_devs not in ibc_vals:
-                    estado = "Transferencia no encontrada - Devengado no coincide"
-                elif len(ibc_vals) > 1:
-                    estado = "Transferencia no encontrada - IBC sin soporte"
+            # Construir estado para seguridad social (IBC vs Devengado)
+            if sum_devs is None:
+                estado_seg = "Devengado no encontrado"
+            elif not ibc_vals or sum_devs not in ibc_vals:
+                estado_seg = "Devengado no coincide"
+            elif len(ibc_vals) > 1:
+                estado_seg = "IBC sin soporte"
+            else:
+                estado_seg = "OK"
 
-            resultados.append({
+            # Agregar resultado para transferencias (usa suma para OK)
+            resultados_transfers.append({
                 "Identificación": doc,
                 "Cuenta": cta,
-                "Estado": estado,
+                "Estado": estado_trans,
                 "Neto_desprendibles": list(netos),
                 "Valores_transferencia": list(valores_trans) if valores_trans is not None else None,
+            })
+
+            # Agregar resultado para seguridad social (IBC)
+            resultados_seguridad.append({
+                "Identificación": doc,
+                "Estado": estado_seg,
                 "Devengado": sum_devs,
                 "IBC": ibc_vals if ibc_vals else None,
             })
+        df_t = pd.DataFrame(resultados_transfers)
+        df_s = pd.DataFrame(resultados_seguridad)
 
-        return pd.DataFrame(resultados)
+        return df_t, df_s
 
     def _display_results(self):
         """
         Muestra los resultados de la conciliación en la tabla de la interfaz (Treeview).
         """
-        # Paso 1: limpiar los elementos existentes de la tabla
-        for item in self.tree.get_children():
-            self.tree.delete(item)
+        # Limpiar ambas tablas
+        for t in (self.tree_transfers, self.tree_seguridad):
+            for item in t.get_children():
+                t.delete(item)
 
-        # Paso 2: validar que existan resultados
-        if self.df_resultado is None or self.df_resultado.empty:
+        # Validar que existan resultados
+        if (not hasattr(self, 'df_resultado_transfers') or self.df_resultado_transfers is None or self.df_resultado_transfers.empty) and (
+            not hasattr(self, 'df_resultado_seguridad') or self.df_resultado_seguridad is None or self.df_resultado_seguridad.empty):
             messagebox.showinfo("Información", "No hay resultados para mostrar")
             return
 
-        # Paso 3: insertar cada fila en la tabla
-        for idx, row in self.df_resultado.iterrows():
-            # Determinar la etiqueta de color según el estado
-            estado = str(row["Estado"] or "")
-            estado_norm = estado.lower()
-            if "transferencia no encontrada" in estado_norm or "devengado no coincide" in estado_norm or "devengado no encontrado" in estado_norm or "valor no coincide" in estado_norm:
-                tag = "error"
-            elif estado_norm == "ibc sin soporte":
-                tag = "warning"
-            elif estado_norm.strip() == "ok":
-                tag = "ok"
-            else:
-                tag = "error"
+        # Insertar filas en la tabla de transferencias
+        if hasattr(self, 'df_resultado_transfers') and self.df_resultado_transfers is not None:
+            for idx, row in self.df_resultado_transfers.iterrows():
+                estado = str(row["Estado"] or "")
+                estado_norm = estado.lower()
+                if "transferencia no encontrada" in estado_norm or "valor no coincide" in estado_norm:
+                    tag = "error"
+                elif estado_norm == "ibc sin soporte":
+                    tag = "warning"
+                elif estado_norm.strip() == "ok":
+                    tag = "ok"
+                else:
+                    tag = "error"
 
-            # Formatear los valores para mostrar
-            neto_display = self.formatear_valores(row["Neto_desprendibles"])
-            if row["Valores_transferencia"] is None:
-                valor_display = ""
-            else:
-                valor_display = self.formatear_valores(row["Valores_transferencia"])
+                neto_display = self.formatear_valores(row.get("Neto_desprendibles", ""))
+                if row.get("Valores_transferencia") is None:
+                    valor_display = ""
+                else:
+                    valor_display = self.formatear_valores(row.get("Valores_transferencia"))
 
-            # Devengado and IBC
-            deveng_display = self.formatear_valores(row.get("Devengado", ""))
-            ibc_display = self.formatear_valores(row.get("IBC", ""))
+                self.tree_transfers.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        row.get("Identificación"),
+                        row.get("Cuenta"),
+                        row.get("Estado"),
+                        neto_display,
+                        valor_display,
+                    ),
+                    tags=(tag,)
+                )
 
-            # Insertar la fila en la tabla con datos formateados
-            self.tree.insert(
-                "",
-                tk.END,
-                values=(
-                    row["Identificación"],
-                    row["Cuenta"],
-                    row["Estado"],
-                    neto_display,
-                    valor_display,
-                    deveng_display,
-                    ibc_display,
-                ),
-                tags=(tag,)
-            )
+        # Insertar filas en la tabla de seguridad social (IBC)
+        if hasattr(self, 'df_resultado_seguridad') and self.df_resultado_seguridad is not None:
+            for idx, row in self.df_resultado_seguridad.iterrows():
+                estado = str(row["Estado"] or "")
+                estado_norm = estado.lower()
+                if "devengado no encontrado" in estado_norm or "devengado no coincide" in estado_norm:
+                    tag = "error"
+                elif estado_norm == "ibc sin soporte":
+                    tag = "warning"
+                elif estado_norm.strip() == "ok":
+                    tag = "ok"
+                else:
+                    tag = "error"
+
+                deveng_display = self.formatear_valores(row.get("Devengado", ""))
+                ibc_display = self.formatear_valores(row.get("IBC", ""))
+
+                self.tree_seguridad.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        row.get("Identificación"),
+                        row.get("Estado"),
+                        deveng_display,
+                        ibc_display,
+                    ),
+                    tags=(tag,)
+                )
     
     def _export_to_csv(self):
         """Exporta los resultados a un archivo CSV."""
-        if self.df_resultado is None or self.df_resultado.empty:
+        df_t = getattr(self, 'df_resultado_transfers', None)
+        df_s = getattr(self, 'df_resultado_seguridad', None)
+
+        if (df_t is None or df_t.empty) and (df_s is None or df_s.empty):
             messagebox.showwarning("Aviso", "No hay resultados para exportar. Primero procesa los PDFs.")
             return
-        
+
         file_path = filedialog.asksaveasfilename(
             defaultextension=".csv",
             filetypes=[("Archivos CSV", "*.csv"), ("Todos los archivos", "*.*")]
         )
-        
-        if file_path:
-            try:
-                self.df_resultado.to_csv(file_path, index=False)
-                messagebox.showinfo("Éxito", f"Resultados exportados en:\n{file_path}")
-            except Exception as e:
-                messagebox.showerror("Error", f"La exportación falló:\n{str(e)}")
+
+        if not file_path:
+            return
+
+        try:
+            parts = []
+            if df_t is not None and not df_t.empty:
+                df_tmp = df_t.copy()
+                df_tmp["Devengado"] = None
+                df_tmp["IBC"] = None
+                df_tmp["Tipo"] = "Transferencia"
+                parts.append(df_tmp)
+            if df_s is not None and not df_s.empty:
+                df_tmp2 = df_s.copy()
+                df_tmp2["Cuenta"] = None
+                df_tmp2["Neto_desprendibles"] = None
+                df_tmp2["Valores_transferencia"] = None
+                df_tmp2["Tipo"] = "Seguridad"
+                parts.append(df_tmp2)
+
+            df_out = pd.concat(parts, ignore_index=True, sort=False)
+            df_out.to_csv(file_path, index=False)
+            messagebox.showinfo("Éxito", f"Resultados exportados en:\n{file_path}")
+        except Exception as e:
+            messagebox.showerror("Error", f"La exportación falló:\n{str(e)}")
     
     def _clear_results(self):
         """Limpia todos los resultados."""
-        for item in self.tree.get_children():
-            self.tree.delete(item)
+        for t in (getattr(self, 'tree_transfers', None), getattr(self, 'tree_seguridad', None)):
+            if t is None:
+                continue
+            for item in t.get_children():
+                t.delete(item)
         self.df_resultado = None
+        self.df_resultado_transfers = None
+        self.df_resultado_seguridad = None
         self.status_label.config(text="Resultados limpiados", foreground="blue")
 
 
