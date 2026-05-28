@@ -135,7 +135,7 @@ def build_reconciliation_rows(despr_dir: str, trans_dir: str, seg_dir: str, mode
         df_seg = payroll_obj.procesar_seguridad_social(seg_dir) if os.listdir(seg_dir) else None
     df_t, df_s = payroll_obj._reconcile_data(df_despr, df_trans, df_seg)
     if (df_t is None or df_t.empty) and (df_s is None or df_s.empty):
-        return pd.DataFrame(), pd.DataFrame(), None
+        return pd.DataFrame(), None
 
     df_t_display = df_t.copy() if df_t is not None else pd.DataFrame()
     df_s_display = df_s.copy() if df_s is not None else pd.DataFrame()
@@ -180,7 +180,9 @@ def build_reconciliation_rows(despr_dir: str, trans_dir: str, seg_dir: str, mode
         if column in df_s_display.columns:
             df_s_display[column] = df_s_display[column].apply(normalize_money_like)
 
-    return df_t_display, df_s_display, None
+    if mode == "transferencias":
+        return df_t_display, None
+    return df_s_display, None
 
 
 mode = st.radio(
@@ -236,24 +238,19 @@ elif mode == "Mapa de Cargos (Transferencias)":
                     (dir_trans / file_obj.name).write_bytes(file_obj.getbuffer())
 
                 try:
-                    result = build_reconciliation_rows(
+                    df_display, error = build_reconciliation_rows(
                         str(dir_despr),
                         str(dir_trans),
                         str(dir_seg),
                         "transferencias",
                     )
-                    if isinstance(result, tuple) and len(result) == 2:
-                        df_t_display, error = result
-                        df_s_display = pd.DataFrame()
-                    else:
-                        df_t_display, df_s_display, error = result
                     if error:
                         st.warning(error)
-                    elif df_t_display is None or df_t_display.empty:
+                    elif df_display is None or df_display.empty:
                         st.info("No se encontraron registros o diferencias.")
                     else:
                         st.subheader("Revisión Transferencias")
-                        st.dataframe(style_estado_table(df_t_display), use_container_width=True, hide_index=True)
+                        st.dataframe(style_estado_table(df_display), use_container_width=True, hide_index=True)
                 except Exception as exc:
                     st.error(f"Procesamiento fallido: {exc}")
 else:
@@ -279,23 +276,18 @@ else:
                     (dir_seg / file_obj.name).write_bytes(file_obj.getbuffer())
 
                 try:
-                    result = build_reconciliation_rows(
+                    df_display, error = build_reconciliation_rows(
                         str(dir_despr),
                         str(dir_trans),
                         str(dir_seg),
                         "seguridad",
                     )
-                    if isinstance(result, tuple) and len(result) == 2:
-                        df_s_display, error = result
-                        df_t_display = pd.DataFrame()
-                    else:
-                        df_t_display, df_s_display, error = result
                     if error:
                         st.warning(error)
-                    elif df_s_display is None or df_s_display.empty:
+                    elif df_display is None or df_display.empty:
                         st.info("No se encontraron registros o diferencias.")
                     else:
                         st.subheader("Revisión Seguridad Social (IBC)")
-                        st.dataframe(style_estado_table(df_s_display), use_container_width=True, hide_index=True)
+                        st.dataframe(style_estado_table(df_display), use_container_width=True, hide_index=True)
                 except Exception as exc:
                     st.error(f"Procesamiento fallido: {exc}")
