@@ -135,7 +135,11 @@ def build_reconciliation_rows(despr_dir: str, trans_dir: str, seg_dir: str, mode
         df_trans = payroll_obj._process_transferencia(trans_dir)
     elif mode == "seguridad":
         df_seg = payroll_obj.procesar_seguridad_social(seg_dir) if os.listdir(seg_dir) else None
-    df_t, df_s = payroll_obj._reconcile_data(df_despr, df_trans, df_seg)
+    rec_result = payroll_obj._reconcile_data(df_despr, df_trans, df_seg)
+    if isinstance(rec_result, tuple) and len(rec_result) >= 2:
+        df_t, df_s = rec_result[0], rec_result[1]
+    else:
+        df_t, df_s = rec_result, pd.DataFrame()
     if (df_t is None or df_t.empty) and (df_s is None or df_s.empty):
         return pd.DataFrame(), None
 
