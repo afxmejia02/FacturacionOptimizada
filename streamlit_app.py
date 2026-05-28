@@ -27,9 +27,9 @@ def load_payroll_module():
 payroll = load_payroll_module()
 
 
-st.set_page_config(page_title="Facturacion Optimizada", layout="wide")
-st.title("Facturacion Optimizada")
-st.caption("Validación de PDFs contra Excel y conciliación de nómina")
+st.set_page_config(page_title="Pagos y Mapa de Cargos", layout="wide")
+st.title("Pagos y Mapa de Cargos")
+st.caption("Pagos (Perfiles, Equipos, Servicios) y Mapa de Cargos")
 
 
 def format_count(value):
@@ -124,16 +124,21 @@ def build_validation_rows(pdf_path: str, excel_path: str, tipo: str):
     return rows, None
 
 
-def build_reconciliation_rows(despr_dir: str, trans_dir: str, seg_dir: str):
+def build_reconciliation_rows(despr_dir: str, trans_dir: str, seg_dir: str, mode: str):
     payroll_obj = payroll.PayrollReconciliationApp.__new__(payroll.PayrollReconciliationApp)
     df_despr = payroll_obj._process_desprendibles(despr_dir)
-    df_trans = payroll_obj._process_transferencia(trans_dir)
-    df_seg = payroll_obj.procesar_seguridad_social(seg_dir) if os.listdir(seg_dir) else None
-    df = payroll_obj._reconcile_data(df_despr, df_trans, df_seg)
-    if df is None or df.empty:
-        return pd.DataFrame(), None
+    df_trans = None
+    df_seg = None
+    if mode == "transferencias":
+        df_trans = payroll_obj._process_transferencia(trans_dir)
+    elif mode == "seguridad":
+        df_seg = payroll_obj.procesar_seguridad_social(seg_dir) if os.listdir(seg_dir) else None
+    df_t, df_s = payroll_obj._reconcile_data(df_despr, df_trans, df_seg)
+    if (df_t is None or df_t.empty) and (df_s is None or df_s.empty):
+        return pd.DataFrame(), pd.DataFrame(), None
 
-    df_display = df.copy()
+    df_t_display = df_t.copy() if df_t is not None else pd.DataFrame()
+    df_s_display = df_s.copy() if df_s is not None else pd.DataFrame()
 
     def normalize_money_like(v):
         if v is None:
@@ -170,15 +175,21 @@ def build_reconciliation_rows(despr_dir: str, trans_dir: str, seg_dir: str):
             return raw_value
 
     for column in ["Neto_desprendibles", "Valores_transferencia", "Devengado", "IBC"]:
-        if column in df_display.columns:
-            df_display[column] = df_display[column].apply(normalize_money_like)
+        if column in df_t_display.columns:
+            df_t_display[column] = df_t_display[column].apply(normalize_money_like)
+        if column in df_s_display.columns:
+            df_s_display[column] = df_s_display[column].apply(normalize_money_like)
 
-    return df_display, None
+    return df_t_display, df_s_display, None
 
 
-mode = st.radio("Tipo de proceso", ["validation", "reconciliation"], horizontal=True)
+mode = st.radio(
+    "Tipo de proceso",
+    ["Pagos (Perfiles, Equipos, Servicios)", "Mapa de Cargos (Transferencias)", "Mapa de Cargos (Seguridad Social)"],
+    horizontal=True,
+)
 
-if mode == "validation":
+if mode == "Pagos (Perfiles, Equipos, Servicios)":
     tipo = st.selectbox("Tipo de validación", ["equipos", "servicios", "perfiles"])
     pdf_file = st.file_uploader("PDF", type=["pdf"])
     excel_file = st.file_uploader("Excel", type=["xlsx", "xls"])
@@ -202,16 +213,15 @@ if mode == "validation":
                     df_display = pd.DataFrame(rows)
                     st.dataframe(style_estado_table(df_display), use_container_width=True, hide_index=True)
 
-else:
+elif mode == "Mapa de Cargos (Transferencias)":
     despr_files = st.file_uploader("PDFs de desprendibles", type=["pdf"], accept_multiple_files=True)
     trans_files = st.file_uploader("PDFs de transferencias", type=["pdf"], accept_multiple_files=True)
-    seg_files = st.file_uploader("PDFs de seguridad social", type=["pdf"], accept_multiple_files=True)
 
-    if st.button("Procesar conciliación", type="primary"):
+    if st.button("Procesar mapa de cargos", type="primary"):
         if not despr_files or not trans_files:
             st.error("Debes subir al menos un PDF de desprendibles y uno de transferencias.")
         else:
-            with tempfile.TemporaryDirectory(prefix="streamlit_reconciliation_") as tmp_dir:
+            with tempfile.TemporaryDirectory(prefix="streamlit_mapa_transferencias_") as tmp_dir:
                 tmp_base = Path(tmp_dir)
                 dir_despr = tmp_base / "despr"
                 dir_trans = tmp_base / "trans"
@@ -224,16 +234,58 @@ else:
                     (dir_despr / file_obj.name).write_bytes(file_obj.getbuffer())
                 for file_obj in trans_files:
                     (dir_trans / file_obj.name).write_bytes(file_obj.getbuffer())
-                for file_obj in seg_files or []:
+
+                try:
+                    df_t_display, df_s_display, error = build_reconciliation_rows(
+                        str(dir_despr),
+                        str(dir_trans),
+                        str(dir_seg),
+                        "transferencias",
+                    )
+                    if error:
+                        st.warning(error)
+                    elif df_t_display is None or df_t_display.empty:
+                        st.info("No se encontraron registros o diferencias.")
+                    else:
+                        st.subheader("Revisión Transferencias")
+                        st.dataframe(style_estado_table(df_t_display), use_container_width=True, hide_index=True)
+                except Exception as exc:
+                    st.error(f"Procesamiento fallido: {exc}")
+else:
+    despr_files = st.file_uploader("PDFs de desprendibles", type=["pdf"], accept_multiple_files=True)
+    seg_files = st.file_uploader("PDFs de seguridad social", type=["pdf"], accept_multiple_files=True)
+
+    if st.button("Procesar mapa de cargos", type="primary"):
+        if not despr_files or not seg_files:
+            st.error("Debes subir al menos un PDF de desprendibles y uno de seguridad social.")
+        else:
+            with tempfile.TemporaryDirectory(prefix="streamlit_mapa_seguridad_") as tmp_dir:
+                tmp_base = Path(tmp_dir)
+                dir_despr = tmp_base / "despr"
+                dir_trans = tmp_base / "trans"
+                dir_seg = tmp_base / "seg"
+                dir_despr.mkdir(parents=True, exist_ok=True)
+                dir_trans.mkdir(parents=True, exist_ok=True)
+                dir_seg.mkdir(parents=True, exist_ok=True)
+
+                for file_obj in despr_files:
+                    (dir_despr / file_obj.name).write_bytes(file_obj.getbuffer())
+                for file_obj in seg_files:
                     (dir_seg / file_obj.name).write_bytes(file_obj.getbuffer())
 
                 try:
-                    df_display, error = build_reconciliation_rows(str(dir_despr), str(dir_trans), str(dir_seg))
+                    df_t_display, df_s_display, error = build_reconciliation_rows(
+                        str(dir_despr),
+                        str(dir_trans),
+                        str(dir_seg),
+                        "seguridad",
+                    )
                     if error:
                         st.warning(error)
-                    elif df_display.empty:
+                    elif df_s_display is None or df_s_display.empty:
                         st.info("No se encontraron registros o diferencias.")
                     else:
-                        st.dataframe(style_estado_table(df_display), use_container_width=True, hide_index=True)
+                        st.subheader("Revisión Seguridad Social (IBC)")
+                        st.dataframe(style_estado_table(df_s_display), use_container_width=True, hide_index=True)
                 except Exception as exc:
                     st.error(f"Procesamiento fallido: {exc}")
