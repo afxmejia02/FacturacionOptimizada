@@ -245,7 +245,13 @@ def _process_reconciliation(despr_files, trans_files, seguridad_files, recon_mod
         df_trans = payroll_obj._process_transferencia(dir_trans) if os.listdir(dir_trans) else None
         df_seg = payroll_obj.procesar_seguridad_social(dir_seg) if os.listdir(dir_seg) else None
 
-        df_transfers, df_seguridad = payroll_obj._reconcile_data(df_despr, df_trans, df_seg)
+        reconcile_result = payroll_obj._reconcile_data(df_despr, df_trans, df_seg)
+        if isinstance(reconcile_result, tuple) and len(reconcile_result) == 2:
+            df_transfers, df_seguridad = reconcile_result
+        else:
+            df_transfers = pd.DataFrame()
+            df_seguridad = pd.DataFrame()
+
         if (df_transfers is None or df_transfers.empty) and (df_seguridad is None or df_seguridad.empty):
             return [], "No se encontraron registros o diferencias."
 
