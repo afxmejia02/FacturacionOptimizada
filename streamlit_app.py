@@ -26,10 +26,12 @@ def load_payroll_module():
 
 payroll = load_payroll_module()
 
+APP_VERSION = "streamlit-mapa-options-7f67d1a"
+
 
 st.set_page_config(page_title="Pagos y Mapa de Cargos", layout="wide")
 st.title("Pagos y Mapa de Cargos")
-st.caption("Pagos (Perfiles, Equipos, Servicios) y Mapa de Cargos")
+st.caption(f"Pagos (Perfiles, Equipos, Servicios) y Mapa de Cargos - {APP_VERSION}")
 
 
 def format_count(value):
