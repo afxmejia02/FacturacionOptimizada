@@ -7,6 +7,7 @@ desktop GUI or Flask server.
 from __future__ import annotations
 
 import importlib.util
+import io
 import os
 import sys
 import tempfile
@@ -15,12 +16,15 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 # Ensure parent workspace is on sys.path so we can import the existing module
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from facturacion import gui_validation_app as validator
+from codigos import excluded_codes
 
 
 DEBUG_MODE = os.environ.get("VALIDATION_DEBUG", "1") == "1"
@@ -63,6 +67,154 @@ def _build_colored_table(df_display: pd.DataFrame) -> str:
 
     parts.append('</tbody></table>')
     return "".join(parts)
+
+
+def _excel_money(value):
+    if value is None or value == "":
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    try:
+        if isinstance(value, str):
+            cleaned = value.replace("$", "").replace(",", "").strip()
+            return float(cleaned)
+        return float(value)
+    except Exception:
+        return value
+
+
+def _expand_list_columns(df: pd.DataFrame, column_map: dict[str, str]) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+
+    df_out = df.copy()
+    for source_col, prefix in column_map.items():
+        if source_col not in df_out.columns:
+            continue
+
+        max_len = 0
+        normalized_values = []
+        for value in df_out[source_col].tolist():
+            if isinstance(value, (list, tuple, set)):
+                items = list(value)
+            elif value is None or (isinstance(value, float) and pd.isna(value)):
+                items = []
+            else:
+                items = [value]
+            normalized_values.append(items)
+            max_len = max(max_len, len(items))
+
+        for idx in range(max_len):
+            new_col = f"{prefix} {idx + 1}"
+            df_out[new_col] = [items[idx] if idx < len(items) else None for items in normalized_values]
+
+        df_out = df_out.drop(columns=[source_col])
+
+    return df_out
+
+
+def _apply_currency_format(worksheet, header_prefixes: tuple[str, ...]) -> None:
+    header_map = {}
+    for cell in worksheet[1]:
+        if cell.value is not None:
+            header_map[str(cell.value)] = cell.column
+
+    for header, column_index in header_map.items():
+        if not header.startswith(header_prefixes):
+            continue
+
+        column_letter = get_column_letter(column_index)
+        for row_idx in range(2, worksheet.max_row + 1):
+            cell = worksheet[f"{column_letter}{row_idx}"]
+            if isinstance(cell.value, (int, float)):
+                cell.number_format = '$#,##0.00'
+                cell.alignment = Alignment(horizontal="right")
+
+
+def _apply_row_status_styles(worksheet) -> None:
+    header_map = {}
+    for cell in worksheet[1]:
+        if cell.value is not None:
+            header_map[str(cell.value)] = cell.column
+
+    estado_col = header_map.get("Estado")
+    if estado_col is None:
+        return
+
+    ok_fill = PatternFill(fill_type="solid", fgColor="D4EDDA")
+    ok_font = Font(color="155724")
+    error_fill = PatternFill(fill_type="solid", fgColor="F8D7DA")
+    error_font = Font(color="721C24")
+
+    for row_idx in range(2, worksheet.max_row + 1):
+        cell = worksheet.cell(row=row_idx, column=estado_col)
+        estado = str(cell.value or "").strip().lower()
+        if estado == "ok":
+            fill = ok_fill
+            font = ok_font
+        else:
+            fill = error_fill
+            font = error_font
+
+        for col_idx in range(1, worksheet.max_column + 1):
+            current = worksheet.cell(row=row_idx, column=col_idx)
+            current.fill = fill
+            current.font = font
+
+
+def _build_reconciliation_excel_bytes(df_transfers: pd.DataFrame | None, df_seguridad: pd.DataFrame | None, recon_mode: str) -> bytes:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        if recon_mode == "transfers":
+            sheet_name = "Transferencias"
+            df_export = _expand_list_columns(
+                df_transfers,
+                {
+                    "Neto_desprendibles": "Neto",
+                    "Valores_transferencia": "Transferencia",
+                },
+            )
+            if df_transfers is None or df_transfers.empty:
+                pd.DataFrame(columns=["Identificación", "Cuenta", "Estado", "Neto 1", "Transferencia 1"]).to_excel(
+                    writer,
+                    sheet_name=sheet_name,
+                    index=False,
+                )
+            else:
+                df_export.to_excel(writer, sheet_name=sheet_name, index=False)
+        elif recon_mode == "seguridad":
+            sheet_name = "Seguridad_Social"
+            df_export = df_seguridad.copy() if df_seguridad is not None else None
+            if df_seguridad is None or df_seguridad.empty:
+                pd.DataFrame(columns=["Identificación", "Estado", "Devengado", "IBC"]).to_excel(
+                    writer,
+                    sheet_name=sheet_name,
+                    index=False,
+                )
+            else:
+                if df_export is not None:
+                    df_export["Devengado"] = df_export["Devengado"].apply(_excel_money)
+                    df_export["IBC"] = df_export["IBC"].apply(lambda value: ", ".join(str(item) for item in value) if isinstance(value, (list, tuple, set)) else _excel_money(value))
+                df_export.to_excel(writer, sheet_name=sheet_name, index=False)
+        else:
+            if df_transfers is not None:
+                df_transfers.to_excel(writer, sheet_name="Transferencias", index=False)
+            if df_seguridad is not None:
+                df_seguridad.to_excel(writer, sheet_name="Seguridad_Social", index=False)
+
+        workbook = writer.book
+        if "Transferencias" in workbook.sheetnames:
+            _apply_row_status_styles(workbook["Transferencias"])
+            _apply_currency_format(workbook["Transferencias"], ("Neto", "Transferencia", "Devengado", "IBC"))
+        if "Seguridad_Social" in workbook.sheetnames:
+            _apply_row_status_styles(workbook["Seguridad_Social"])
+            _apply_currency_format(workbook["Seguridad_Social"], ("Devengado", "IBC"))
+
+    output.seek(0)
+    return output.getvalue()
 
 
 def _format_count(value):
@@ -134,7 +286,9 @@ def _format_dataframe(df_in: pd.DataFrame, formatter) -> pd.DataFrame:
 
 def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
     registros = []
-    excluded_profiles = {"none", "incapacidad", "observaciones"}
+    excluded_profiles = {"none", "observaciones"}
+                      
+
 
     validator_obj = validator.ServicesValidationApp.__new__(validator.ServicesValidationApp)
     with tempfile.TemporaryDirectory(prefix="web_ui_perfiles_") as _tmp_dir:
@@ -169,6 +323,9 @@ def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
                     for row in tabla[7:]:
                         if len(row) <= idx_perfil:
                             continue
+                        if row[4] in excluded_codes:
+                            continue
+
 
                         perfil = row[idx_perfil]
                         observacion = row[-1]
@@ -183,20 +340,20 @@ def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
                         tabla_info_upper = tabla_info.upper()
                         if "GLOBAL" in tabla_info_upper or "NO FACTURABLE" in tabla_info_upper:
                             continue
+                        
+
 
                         if isinstance(perfil, str) and observacion == "":
                             perfil = perfil.strip()
                             if perfil:
                                 perfil_norm = validator_obj._normalizar_perfil(perfil)
                         elif observacion != "":
+
                             perfil = str(observacion).split()[-1]
                             if perfil:
                                 perfil_norm = validator_obj._normalizar_perfil(perfil)
 
                         if not perfil_norm:
-                            continue
-
-                        if str(perfil_norm).strip().lower() in excluded_profiles:
                             continue
 
                         cantidad = 1 / 3 if "24" in tabla_info else 1
@@ -266,7 +423,7 @@ def _build_perfiles_table(pdf_source, excel_source) -> pd.DataFrame:
 
 def _extract_excel_perfiles_by_date(excel_path: str) -> pd.DataFrame:
     validator_obj = validator.ServicesValidationApp.__new__(validator.ServicesValidationApp)
-    excluded_profiles = {"none", "incapacidad", "observaciones"}
+    excluded_profiles = {"none", "observaciones"}
     df_hist = pd.read_excel(excel_path)
     if "DESCRIPCION TARIFA" not in df_hist.columns:
         raise KeyError("El archivo Excel no contiene la columna 'DESCRIPCION TARIFA'.")
@@ -405,7 +562,7 @@ def _process_reconciliation(despr_files, trans_files, seguridad_files, recon_mod
             df_seguridad = pd.DataFrame()
 
         if (df_transfers is None or df_transfers.empty) and (df_seguridad is None or df_seguridad.empty):
-            return [], "No se encontraron registros o diferencias."
+            return [], "No se encontraron registros o diferencias.", df_transfers, df_seguridad
 
         df_display_t = df_transfers.copy() if df_transfers is not None else pd.DataFrame()
         df_display_s = df_seguridad.copy() if df_seguridad is not None else pd.DataFrame()
@@ -421,9 +578,9 @@ def _process_reconciliation(despr_files, trans_files, seguridad_files, recon_mod
             parts.append(("Revisión Seguridad Social (IBC)", _build_colored_table(df_display_s)))
 
         if not parts:
-            return [], "No se encontraron registros para el modo seleccionado."
+            return [], "No se encontraron registros para el modo seleccionado.", df_transfers, df_seguridad
 
-        return parts, None
+        return parts, None, df_transfers, df_seguridad
 
 
 def main():
@@ -436,6 +593,12 @@ def main():
         st.session_state.perfiles_result_df = None
     if "perfiles_result_ready" not in st.session_state:
         st.session_state.perfiles_result_ready = False
+    if "recon_transfer_df" not in st.session_state:
+        st.session_state.recon_transfer_df = None
+    if "recon_seguridad_df" not in st.session_state:
+        st.session_state.recon_seguridad_df = None
+    if "recon_mode" not in st.session_state:
+        st.session_state.recon_mode = None
 
     app_choice = st.radio(
         "Selecciona la herramienta",
@@ -536,10 +699,15 @@ def main():
 
                 try:
                     with st.spinner("Procesando conciliación..."):
-                        parts, message = _process_reconciliation(despr_files, trans_files, seguridad_files, recon_mode)
+                        parts, message, df_transfers, df_seguridad = _process_reconciliation(despr_files, trans_files, seguridad_files, recon_mode)
+                        st.session_state.recon_transfer_df = df_transfers
+                        st.session_state.recon_seguridad_df = df_seguridad
+                        st.session_state.recon_mode = recon_mode
                     if message:
                         st.info(message)
+                        st.session_state.recon_parts = []
                     else:
+                        st.session_state.recon_parts = parts
                         for title, table_html in parts:
                             st.subheader(title)
                             st.markdown(table_html, unsafe_allow_html=True)
@@ -547,6 +715,10 @@ def main():
                     print("[ERROR][web_ui] Procesamiento de conciliacion fallido")
                     traceback.print_exc()
                     st.error(f"Procesamiento de conciliación falló: {exc}")
+                    st.session_state.recon_parts = []
+                    st.session_state.recon_transfer_df = None
+                    st.session_state.recon_seguridad_df = None
+                    st.session_state.recon_mode = None
 
     if st.session_state.perfiles_result_ready and isinstance(st.session_state.perfiles_result_df, pd.DataFrame):
         df_perfiles = st.session_state.perfiles_result_df
@@ -563,6 +735,29 @@ def main():
                 df_perfiles = df_perfiles[df_perfiles["Fecha"].astype(str) == selected_date].copy()
 
             st.markdown(_build_colored_table(df_perfiles), unsafe_allow_html=True)
+
+    if "recon_parts" in st.session_state and st.session_state.recon_mode:
+        df_transfers = st.session_state.recon_transfer_df
+        df_seguridad = st.session_state.recon_seguridad_df
+
+        if st.session_state.recon_parts:
+            for title, table_html in st.session_state.recon_parts:
+                st.subheader(title)
+                st.markdown(table_html, unsafe_allow_html=True)
+
+            excel_bytes = _build_reconciliation_excel_bytes(df_transfers, df_seguridad, st.session_state.recon_mode)
+            file_name = (
+                "reconciliacion_transferencias.xlsx"
+                if st.session_state.recon_mode == "transfers"
+                else "reconciliacion_seguridad_social.xlsx"
+            )
+            st.download_button(
+                label="Descargar Excel con resultados",
+                data=excel_bytes,
+                file_name=file_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"download_recon_{st.session_state.recon_mode}",
+            )
 
 
 if __name__ == "__main__":

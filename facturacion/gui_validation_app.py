@@ -241,6 +241,39 @@ class ServicesValidationApp:
         texto = texto.replace("Nivel", "").replace("Perfil", "")
         return texto.replace("/", "").strip()
 
+    def _es_celda_vacia(self, valor):
+        if valor is None:
+            return True
+        try:
+            if pd.isna(valor):
+                return True
+        except Exception:
+            pass
+
+        texto_raw = str(valor)
+        texto = unicodedata.normalize("NFKC", texto_raw)
+
+        # Replace a broad set of invisible/whitespace characters with a single space
+        texto = re.sub(r"[\s\u00A0\u2007\u202F\u200B\uFEFF\u2060\u200C\u200D]+", " ", texto)
+        texto = texto.strip()
+
+        # Remove surrounding matching quote characters repeatedly (handles '"   "')
+        QUOTES = '"\'\u201C\u201D\u201E\u201F\u00AB\u00BB\u2039\u203A'
+        while len(texto) >= 2 and texto[0] in QUOTES and texto[-1] in QUOTES:
+            texto = texto[1:-1].strip()
+
+        # Remove remaining quote characters and collapse interior whitespace
+        texto = texto.replace('"', "").replace("'", "").replace("\u0000", "")
+        texto = re.sub(r"\s+", "", texto).lower()
+
+        if not texto:
+            if self.debug_mode:
+                self._debug_print(f"_es_celda_vacia: raw={repr(texto_raw)} -> normalized empty string")
+            return True
+        if self.debug_mode:
+            self._debug_print(f"_es_celda_vacia: raw={repr(texto_raw)} -> normalized={repr(texto)}")
+        return texto in {"nan", "none", "null"}
+
     def _normalizar_fecha(self, valor):
         meses = {
             "enero": 1, "febrero": 2, "marzo": 3, "abril": 4,
@@ -373,12 +406,19 @@ class ServicesValidationApp:
 
                         cantidad = 1 / 3 if "24" in tabla_info else 1
 
-                        if isinstance(perfil, str) and observacion == "":
+                        celda_validacion = row[7] if len(row) > 7 else None
+                        if self._es_celda_vacia(celda_validacion):
+                            self._debug_print(
+                                f"Fila omitida por row[7] vacio: {repr(celda_validacion)} | perfil={repr(perfil)} | observacion={repr(observacion)}"
+                            )
+                            continue
+
+                        if isinstance(perfil, str) and self._es_celda_vacia(observacion):
                             perfil = perfil.strip()
                             if perfil:
                                 conteo[self._normalizar_perfil(perfil)] += cantidad
                                 
-                        if observacion != "":
+                        if not self._es_celda_vacia(observacion):
                             perfil = str(observacion).split()[-1]
                             if perfil:
                                 conteo[self._normalizar_perfil(perfil)] += cantidad
