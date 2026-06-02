@@ -30,6 +30,9 @@ reutiliza la web:
   del banco (líneas `… PAGO NOMINA BCA <valor>`). La seguridad social es la
   “Planilla Resumen” de aportes en línea: el documento está en la columna 2 y el
   IBC de pensión en la columna 26 (página 1) o 27 (páginas siguientes).
+  La columna de cuenta/producto del soporte es **opcional**: algunos soportes la
+  traen (9+ dígitos, entre el NIT y la fecha) y otros van directo del NIT a la
+  fecha. El parser detecta ambos casos.
 
 > Importante: el formato de los desprendibles debe coincidir con el de las
 > transferencias / seguridad social. La web pasa el mismo `formato` a todos los

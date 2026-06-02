@@ -482,11 +482,14 @@ class PayrollReconciliationApp:
     def _process_transferencia_italco(self, folder_path):
         registros = []
 
+        # La columna de cuenta (producto) sólo aparece en algunos soportes. Es
+        # opcional y, cuando existe, tiene 9+ dígitos; así no se confunde con la
+        # fecha (8 dígitos) ni con la factura (6 dígitos).
         patron_soportes = re.compile(
             r"""
-            (?P<nombre>(?:[0-9A-Z ]+))\s+
+            (?P<nombre>(?:[0-9A-Z ]+?))\s+
             (?P<nit>\d{6,})\s+
-            (?P<producto>\d+)\s+
+            (?:(?P<producto>\d{9,})\s+)?
             (?P<fecha>\d{8})\s+
             (?P<factura>\d+)\s+
             PAGO\s+NOMINA\s+BCA\s+
@@ -526,7 +529,7 @@ class PayrollReconciliationApp:
                         # Normalizar nombre sin zeros incrustados (limpiar_texto rule)
                         nombre = re.sub(r"(?<=\D)0(?=\D)", "", data["nombre"]).lstrip("0").strip()
                         nit = re.sub(r"[^\d]", "", data["nit"])
-                        producto = re.sub(r"[^\d]", "", data["producto"])
+                        producto = re.sub(r"[^\d]", "", data["producto"]) if data.get("producto") else None
                         valor = self._limpiar_numero(data["valor"])
                         fecha = None
                         try:
