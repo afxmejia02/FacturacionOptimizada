@@ -286,16 +286,23 @@ class PayrollReconciliationApp:
                 foreground="red"
             ))
     
-    def _process_desprendibles(self, folder_path):
+    def _process_desprendibles(self, folder_path, formato="tabarca"):
         """
         Extrae datos de desprendibles desde archivos PDF.
-        
+
         Args:
             folder_path (str): Ruta de la carpeta con PDFs de desprendibles
-            
+            formato (str): Formato del desprendible a interpretar ("tabarca" o "italco")
+
         Returns:
-            pd.DataFrame: DataFrame con las columnas [Identificacion, Neto, Cuenta]
+            pd.DataFrame: DataFrame con las columnas [Identificacion, Neto, Devengado, Cuenta]
         """
+        formato = (formato or "tabarca").strip().lower()
+        if formato == "italco":
+            return self._process_desprendibles_italco(folder_path)
+        return self._process_desprendibles_tabarca(folder_path)
+
+    def _process_desprendibles_tabarca(self, folder_path):
         registros = []
         
         # Buscar PDFs de desprendibles (normalmente nombrados por mes/año)
@@ -358,19 +365,78 @@ class PayrollReconciliationApp:
             df["Neto"] = df["Neto"].fillna(0).astype("int64")
             # Convertir Devengado a entero
             if "Devengado" in df.columns:
-                df["Devengado"] = df["Devengado"].fillna(0).astype("int64") 
+                df["Devengado"] = df["Devengado"].fillna(0).astype("int64")
         return df
-    
-    def _process_transferencia(self, folder_path):
+
+    def _process_desprendibles_italco(self, folder_path):
+        """
+        Extrae datos de los comprobantes de pago de nómina en formato ITALCO.
+
+        A diferencia del formato TABARCA, cada página es un comprobante con la
+        cédula tras ``CC:`` y el neto tras ``Total Neto:`` (sin símbolo ``$``).
+
+        Returns:
+            pd.DataFrame: DataFrame con las columnas [Identificacion, Neto, Devengado, Cuenta]
+        """
+        registros = []
+
+        for filename in os.listdir(folder_path):
+            if not filename.lower().endswith(".pdf"):
+                continue
+
+            path = os.path.join(folder_path, filename)
+            with pdfplumber.open(path) as pdf:
+                for page in pdf.pages:
+                    texto = page.extract_text() or ""
+                    if not texto:
+                        continue
+
+                    texto_plano = re.sub(r"\s+", " ", texto)
+                    cc_match = re.search(r"CC:\s*([\d.,]+)", texto_plano, re.IGNORECASE)
+                    neto_match = re.search(r"Total Neto:\s*([\d,\.]+)", texto_plano, re.IGNORECASE)
+                    cuenta_match = re.search(r"CUENTA:\s*(\d+)", texto_plano, re.IGNORECASE)
+
+                    if not (cc_match and neto_match):
+                        continue
+
+                    identificacion = re.sub(r"[^\d]", "", cc_match.group(1))
+                    neto = self._limpiar_numero(neto_match.group(1))
+                    cuenta = cuenta_match.group(1) if cuenta_match else None
+
+                    if not identificacion:
+                        continue
+
+                    registros.append({
+                        "Identificacion": identificacion,
+                        "Neto": neto,
+                        "Devengado": None,
+                        "Cuenta": cuenta,
+                    })
+
+        df = pd.DataFrame(registros)
+
+        if not df.empty:
+            df["Neto"] = df["Neto"].fillna(0).astype("int64")
+            df["Devengado"] = df["Devengado"].fillna(0).astype("int64")
+        return df
+
+    def _process_transferencia(self, folder_path, formato="tabarca"):
         """
         Extract transfer data from PDF files.
-        
+
         Args:
             folder_path (str): Path to folder containing transfer PDFs
-            
+            formato (str): Transfer layout to parse ("tabarca" or "italco")
+
         Returns:
             pd.DataFrame: DataFrame with transfer information
         """
+        formato = (formato or "tabarca").strip().lower()
+        if formato == "italco":
+            return self._process_transferencia_italco(folder_path)
+        return self._process_transferencia_tabarca(folder_path)
+
+    def _process_transferencia_tabarca(self, folder_path):
         registros = []
 
         # Iterate PDF files in the folder and parse transfer lines
@@ -407,6 +473,114 @@ class PayrollReconciliationApp:
 
             df["Valor"] = df["Valor"].apply(_to_int)
             df["Valor"] = df["Valor"].fillna(0).astype("int64")
+
+        return df
+
+    def _process_transferencia_italco(self, folder_path):
+        registros = []
+
+        patron_soportes = re.compile(
+            r"""
+            (?P<nombre>(?:[0-9A-Z ]+))\s+
+            (?P<nit>\d{6,})\s+
+            (?P<producto>\d+)\s+
+            (?P<fecha>\d{8})\s+
+            (?P<factura>\d+)\s+
+            PAGO\s+NOMINA\s+BCA\s+
+            (?P<valor>[\d,.]+)
+            """,
+            re.VERBOSE | re.IGNORECASE,
+        )
+
+        for filename in os.listdir(folder_path):
+            if not filename.lower().endswith(".pdf"):
+                continue
+
+            path = os.path.join(folder_path, filename)
+
+            with pdfplumber.open(path) as pdf:
+                for page_num, page in enumerate(pdf.pages, start=1):
+                    texto = page.extract_text() or ""
+                    if not texto:
+                        continue
+
+                    page_rows = []
+                    texto_plano = re.sub(r"\s+", " ", texto)
+
+                    for linea in texto.split("\n"):
+                        # Clean line exactly as in the working notebook code
+                        linea_limpia = re.sub(r"(?<=\D)0(?=\D)", "", linea)
+                        linea_limpia = re.sub(r"\s+", " ", linea_limpia).strip()
+
+                        if not linea_limpia:
+                            continue
+
+                        m = patron_soportes.search(linea_limpia)
+                        if not m:
+                            continue
+
+                        data = m.groupdict()
+                        # Normalizar nombre sin zeros incrustados (limpiar_texto rule)
+                        nombre = re.sub(r"(?<=\D)0(?=\D)", "", data["nombre"]).lstrip("0").strip()
+                        nit = re.sub(r"[^\d]", "", data["nit"])
+                        producto = re.sub(r"[^\d]", "", data["producto"])
+                        valor = self._limpiar_numero(data["valor"])
+                        fecha = None
+                        try:
+                            fecha = pd.to_datetime(data["fecha"], format="%Y%m%d", errors="coerce")
+                        except Exception:
+                            fecha = None
+
+                        page_rows.append(
+                            {
+                                "Cuenta": producto or None,
+                                "Tipo": "ITALCO",
+                                "Documento": nit,
+                                "Nombre": nombre,
+                                "Valor": valor,
+                                "Fecha": fecha,
+                            }
+                        )
+
+                    if page_rows:
+                        registros.extend(page_rows)
+                        continue
+
+                    cc_match = re.search(r"CC:\s*([\d.]+)", texto_plano, re.IGNORECASE)
+                    neto_match = re.search(r"Total Neto:\s*([\d,\.]+)", texto_plano, re.IGNORECASE)
+                    if cc_match and neto_match:
+                        cc = re.sub(r"[^\d]", "", cc_match.group(1))
+                        neto = self._limpiar_numero(neto_match.group(1))
+                        registros.append(
+                            {
+                                "Cuenta": None,
+                                "Tipo": "ITALCO",
+                                "Documento": cc,
+                                "Nombre": None,
+                                "Valor": neto,
+                                "Fecha": None,
+                            }
+                        )
+
+        df = pd.DataFrame(registros)
+
+        if not df.empty and "Valor" in df.columns:
+            def _to_int(v):
+                try:
+                    if v is None:
+                        return None
+                    num = self._limpiar_numero(str(v))
+                    return int(num) if num is not None else None
+                except Exception:
+                    return None
+
+            df["Valor"] = df["Valor"].apply(_to_int)
+            df["Valor"] = df["Valor"].fillna(0).astype("int64")
+
+        if not df.empty:
+            dedupe_cols = [col for col in ("Documento", "Cuenta", "Valor", "Fecha") if col in df.columns]
+            if dedupe_cols:
+                df = df.drop_duplicates(subset=dedupe_cols)
 
         return df
 
@@ -780,11 +954,6 @@ class PayrollReconciliationApp:
             # Devengado: tomar valores únicos (puede haber varios)
             devs = _normalizar_lista(grupo_despr["Devengado"].dropna().tolist()) if "Devengado" in grupo_despr else []
             sum_devs = _normalizar_numero(sum(devs)) if devs else None
-            if doc == "92030208":
-                print("DEBUG - Identificación 91509151:")
-                print("Netos encontrados en desprendibles:", netos)
-                print("Devengados encontrados en desprendibles:", devs)
-                print("Suma de Devengados:", sum_devs)
 
             cta = grupo_despr["Cuenta"].iloc[0] if "Cuenta" in grupo_despr.columns else None
 

@@ -3,8 +3,7 @@
 /*
 !/.gitignore
 !/requirements.txt
-!/streamlit_app.py
-!/QUICKSTART.spec
+!/README.md
 !/facturacion/
 !/facturacion/**
 !/mapa-de-cargos/
