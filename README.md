@@ -20,10 +20,12 @@ La interfaz se publica con **Streamlit** para poder compartirla sin instalar nad
 Cada revisión puede recibir documentos en dos formatos:
 
 - **TABARCA** – formato usado por defecto (soportado en todas las revisiones).
-- **ITALCO** – actualmente optimizado para **transferencias**. Sus desprendibles
-  son comprobantes de pago donde la cédula viene tras `CC:` y el neto tras
-  `Total Neto:` (sin símbolo `$`), y los soportes son la consulta de pagos a
-  terceros del banco. El selector de formato en la UI activa los parsers ITALCO.
+- **ITALCO** – soportado en **transferencias** y **seguridad social**. Sus
+  desprendibles son comprobantes de pago donde la cédula viene tras `CC:`, el
+  neto tras `Total Neto:` y el devengado tras `TOTAL INGRESOS` (sin símbolo `$`);
+  los soportes de transferencia son la consulta de pagos a terceros del banco y
+  la seguridad social es la “Planilla Resumen” de aportes en línea. El selector
+  de formato en la UI activa los parsers ITALCO.
 
 ## Estructura del repositorio
 

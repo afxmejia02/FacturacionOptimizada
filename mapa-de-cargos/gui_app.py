@@ -395,12 +395,15 @@ class PayrollReconciliationApp:
                     cc_match = re.search(r"CC:\s*([\d.,]+)", texto_plano, re.IGNORECASE)
                     neto_match = re.search(r"Total Neto:\s*([\d,\.]+)", texto_plano, re.IGNORECASE)
                     cuenta_match = re.search(r"CUENTA:\s*(\d+)", texto_plano, re.IGNORECASE)
+                    # El devengado en ITALCO es el TOTAL INGRESOS (no el Total Neto).
+                    dev_match = re.search(r"TOTAL INGRESOS\s*([\d,\.]+)", texto_plano, re.IGNORECASE)
 
                     if not (cc_match and neto_match):
                         continue
 
                     identificacion = re.sub(r"[^\d]", "", cc_match.group(1))
                     neto = self._limpiar_numero(neto_match.group(1))
+                    devengado = self._limpiar_numero(dev_match.group(1)) if dev_match else None
                     cuenta = cuenta_match.group(1) if cuenta_match else None
 
                     if not identificacion:
@@ -409,7 +412,7 @@ class PayrollReconciliationApp:
                     registros.append({
                         "Identificacion": identificacion,
                         "Neto": neto,
-                        "Devengado": None,
+                        "Devengado": devengado,
                         "Cuenta": cuenta,
                     })
 
@@ -584,7 +587,22 @@ class PayrollReconciliationApp:
 
         return df
 
-    def procesar_seguridad_social(self, folder_path):
+    def procesar_seguridad_social(self, folder_path, formato="tabarca"):
+        """Procesa PDFs de seguridad social (IBC) según el formato indicado.
+
+        Args:
+            folder_path (str): ruta carpeta PDFs
+            formato (str): "tabarca" o "italco"
+
+        Returns:
+            pd.DataFrame con columnas [archivo, cc, ibc]
+        """
+        formato = (formato or "tabarca").strip().lower()
+        if formato == "italco":
+            return self._procesar_seguridad_social_italco(folder_path)
+        return self._procesar_seguridad_social_tabarca(folder_path)
+
+    def _procesar_seguridad_social_tabarca(self, folder_path):
         """
         Procesa PDFs de seguridad social y extrae:
         - CC
@@ -718,7 +736,67 @@ class PayrollReconciliationApp:
             df = df.drop_duplicates(subset=["cc", "ibc"])
 
         return df
-    
+
+    def _procesar_seguridad_social_italco(self, folder_path):
+        """
+        Procesa la "Planilla Resumen" (aportes en línea) en formato ITALCO y
+        extrae el documento y el IBC de pensión por fila.
+
+        La columna del IBC depende del layout de la página: en la primera página
+        las filas de personas empiezan en el índice 13 y el IBC está en la
+        columna 26; en las páginas siguientes las filas válidas tienen 43 celdas
+        y el IBC está en la columna 27.
+
+        Returns:
+            pd.DataFrame con columnas [archivo, cc, ibc]
+        """
+        registros = []
+
+        for filename in os.listdir(folder_path):
+            if not filename.lower().endswith(".pdf"):
+                continue
+
+            path = os.path.join(folder_path, filename)
+            with pdfplumber.open(path) as pdf:
+                for page in pdf.pages:
+                    tabla = page.extract_table()
+                    if not tabla:
+                        continue
+
+                    if page.page_number == 1:
+                        filas = tabla[13:]
+                        ibc_idx = 26
+                    else:
+                        filas = [fila for fila in tabla if len(fila) == 43]
+                        ibc_idx = 27
+
+                    for fila in filas:
+                        if len(fila) <= ibc_idx:
+                            continue
+
+                        doc_raw = fila[2]
+                        ibc_raw = fila[ibc_idx]
+                        if not doc_raw or not ibc_raw:
+                            continue
+
+                        cc = re.sub(r"[^\d]", "", str(doc_raw))
+                        ibc = self._limpiar_numero(ibc_raw)
+                        if not cc or ibc is None:
+                            continue
+
+                        registros.append({
+                            "archivo": filename,
+                            "cc": cc,
+                            "ibc": int(ibc),
+                        })
+
+        df = pd.DataFrame(registros)
+
+        if not df.empty:
+            df = df.drop_duplicates(subset=["cc", "ibc"])
+
+        return df
+
     def _parsear_linea(self, linea):
         """
         Parse a single line from transfer PDF.

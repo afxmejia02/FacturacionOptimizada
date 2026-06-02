@@ -339,7 +339,11 @@ def process_reconciliation(despr_files, trans_files, seguridad_files, recon_mode
             if os.listdir(dir_trans)
             else None
         )
-        df_seg = payroll_obj.procesar_seguridad_social(dir_seg) if os.listdir(dir_seg) else None
+        df_seg = (
+            payroll_obj.procesar_seguridad_social(dir_seg, transfer_format)
+            if os.listdir(dir_seg)
+            else None
+        )
 
         reconcile_result = payroll_obj._reconcile_data(df_despr, df_trans, df_seg)
         if isinstance(reconcile_result, tuple) and len(reconcile_result) == 2:

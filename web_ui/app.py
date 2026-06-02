@@ -89,14 +89,14 @@ def _render_pagos_form() -> None:
 def _render_reconciliation_form(app_choice: str) -> None:
     recon_mode = "transfers" if app_choice == "mapa_transferencias" else "seguridad"
 
-    if recon_mode == "transfers":
-        transfer_format = st.selectbox(
-            "Formato de transferencias",
-            ["tabarca", "italco"],
-            format_func=lambda value: value.upper(),
-        )
-    else:
-        transfer_format = "tabarca"
+    format_label = (
+        "Formato de transferencias" if recon_mode == "transfers" else "Formato de seguridad social"
+    )
+    transfer_format = st.selectbox(
+        format_label,
+        ["tabarca", "italco"],
+        format_func=lambda value: value.upper(),
+    )
 
     despr_files = st.file_uploader("PDFs de desprendibles", type=["pdf"], accept_multiple_files=True)
     if recon_mode == "transfers":

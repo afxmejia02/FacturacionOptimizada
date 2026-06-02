@@ -15,7 +15,7 @@ reutiliza la web:
 |--------|-----|
 | `_process_desprendibles(folder, formato)` | Extrae `Identificacion`, `Neto`, `Devengado`, `Cuenta`. Enruta a TABARCA o ITALCO. |
 | `_process_transferencia(folder, formato)` | Extrae los valores transferidos. Enruta a TABARCA o ITALCO. |
-| `procesar_seguridad_social(folder)` | Extrae CC e IBC de las planillas. |
+| `procesar_seguridad_social(folder, formato)` | Extrae CC e IBC de las planillas. Enruta a TABARCA o ITALCO. |
 | `_reconcile_data(despr, trans, seg)` | Agrupa por cédula y compara sumas; devuelve `(df_transfers, df_seguridad)`. |
 
 ### Formatos TABARCA vs ITALCO
@@ -25,11 +25,25 @@ reutiliza la web:
 
 - **TABARCA** – desprendibles tipo “Comprobante de Nómina” con `Neto a Pagar $…`.
 - **ITALCO** – desprendibles tipo “Comprobante de pago de Nomina”: la cédula va
-  tras `CC:` y el neto tras `Total Neto:` (sin `$`); los soportes son la
-  “consulta de pagos a terceros” del banco (líneas `… PAGO NOMINA BCA <valor>`).
+  tras `CC:`, el neto tras `Total Neto:` y el **devengado** tras `TOTAL INGRESOS`
+  (sin `$`). Los soportes de transferencia son la “consulta de pagos a terceros”
+  del banco (líneas `… PAGO NOMINA BCA <valor>`). La seguridad social es la
+  “Planilla Resumen” de aportes en línea: el documento está en la columna 2 y el
+  IBC de pensión en la columna 26 (página 1) o 27 (páginas siguientes).
 
 > Importante: el formato de los desprendibles debe coincidir con el de las
-> transferencias. La web pasa el mismo `formato` a ambos parsers.
+> transferencias / seguridad social. La web pasa el mismo `formato` a todos los
+> parsers (desprendibles, transferencias y seguridad social).
+
+### Conciliación de seguridad social (devengado vs IBC)
+
+Para ambos formatos, `_reconcile_data` agrupa los desprendibles por cédula, suma
+el **devengado** y lo compara contra los **IBC** reportados en la planilla:
+
+- `OK` – el devengado total coincide con un IBC único.
+- `Devengado no coincide` – no hay coincidencia (o falta el IBC).
+- `IBC sin soporte` – coincide pero hay más de un IBC para la cédula.
+- `Devengado no encontrado` – el desprendible no traía devengado.
 
 ## Uso
 
