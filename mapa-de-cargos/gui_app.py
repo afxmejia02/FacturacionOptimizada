@@ -340,6 +340,9 @@ class PayrollReconciliationApp:
                                     bloque,
                                     re.IGNORECASE | re.DOTALL
                                 )
+                            
+                            aux_match = re.search(r"AUXILIO DE LOCALIZACION\s+([\d.,]+)\s+([\d.,]+)", bloque)
+                            
 
                             
                             if id_match and neto_match:
@@ -347,6 +350,10 @@ class PayrollReconciliationApp:
                                 identificacion = identificacion.replace(".", "").replace(",", "")
                                 neto = self._limpiar_numero(neto_match.group(1))
                                 devengado = self._limpiar_numero(deven_match.group(1)) if deven_match else None
+                                if aux_match:
+                                    aux = self._limpiar_numero(aux_match.group(2))
+                                    if devengado is not None and aux is not None:
+                                        devengado -= aux
                                 cuenta = cuenta_match.group(1) if cuenta_match else None
                                 
                                 registros.append({
