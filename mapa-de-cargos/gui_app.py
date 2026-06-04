@@ -342,6 +342,10 @@ class PayrollReconciliationApp:
                                 )
                             
                             aux_match = re.search(r"AUXILIO DE LOCALIZACION\s+([\d.,]+)\s+([\d.,]+)", bloque)
+                            pri_match = re.search(r"PRIMA LEGAL DE SERVICIOS JUNIO\s+([\d.,]+)\s+([\d.,]+)", bloque)
+                            vac_match = re.search(r"VACACIONES INDEMNIZADAS\s+([\d.,]+)\s+([\d.,]+)", bloque)
+                            ces_match = re.search(r"CESANTIAS\s+([\d.,]+)\s+([\d.,]+)", bloque)
+                            int_ces_match= re.search(r"INTERESES DE CESANTIAS\s+([\d.,]+)\s+([\d.,]+)", bloque)
                             
 
                             
@@ -350,10 +354,14 @@ class PayrollReconciliationApp:
                                 identificacion = identificacion.replace(".", "").replace(",", "")
                                 neto = self._limpiar_numero(neto_match.group(1))
                                 devengado = self._limpiar_numero(deven_match.group(1)) if deven_match else None
-                                if aux_match:
-                                    aux = self._limpiar_numero(aux_match.group(2))
-                                    if devengado is not None and aux is not None:
-                                        devengado -= aux
+                                dtos= []
+                                for m in [aux_match, pri_match, vac_match, ces_match, int_ces_match]:
+                                    if m:
+                                        valor = self._limpiar_numero(m.group(2))
+                                        if valor is not None:
+                                            dtos.append(valor)
+                                if devengado is not None and sum(dtos) is not None:
+                                    devengado -= sum(dtos)
                                 cuenta = cuenta_match.group(1) if cuenta_match else None
                                 
                                 registros.append({
