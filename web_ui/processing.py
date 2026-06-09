@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from rendering import build_colored_table, format_count, format_dataframe
+from rendering import build_colored_table, build_mano_obra_table, format_count, format_dataframe
 
 # Ensure the parent workspace is importable so we can reuse the desktop modules.
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +52,21 @@ def load_payroll_module():
     assert spec.loader is not None
     spec.loader.exec_module(payroll)
     return payroll
+
+
+def load_mano_obra_module():
+    """Dynamically load ``mapa-de-cargos/mano_obra.py`` (its folder isn't importable)."""
+    module_path = ROOT / "mapa-de-cargos" / "mano_obra.py"
+    if not module_path.exists():
+        raise FileNotFoundError(
+            "No se encontró el módulo de mano de obra (mapa-de-cargos/mano_obra.py)."
+        )
+
+    spec = importlib.util.spec_from_file_location("mano_obra_module", str(module_path))
+    mano_obra = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mano_obra)
+    return mano_obra
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +160,7 @@ def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
 def _extract_excel_perfiles_by_date(excel_path: str) -> pd.DataFrame:
     validator_obj = _new_validator()
     excluded_profiles = {"none", "observaciones"}
-    df_hist = pd.read_excel(excel_path)
+    df_hist = validator_obj._leer_excel_facturacion(excel_path)
     if "DESCRIPCION TARIFA" not in df_hist.columns:
         raise KeyError("El archivo Excel no contiene la columna 'DESCRIPCION TARIFA'.")
 
@@ -231,7 +246,9 @@ def build_perfiles_table(pdf_source, excel_source) -> pd.DataFrame:
 def process_pagos(pdf_file, excel_file, tipo):
     """Compare PDF counts against the Excel history for equipos/servicios/perfiles.
 
-    Returns ``(table_html, message)`` where exactly one is populated.
+    Returns ``(df_display, message)``: a results DataFrame (with a ``Fecha`` and
+    ``Estado`` column, ready for the date filter + coloured table) or, when there
+    is nothing to show, ``message`` explains why and ``df_display`` is ``None``.
     """
     _debug_print(
         f"Inicio process_pagos. tipo={tipo}, pdf={getattr(pdf_file, 'name', 'N/A')}, "
@@ -255,6 +272,7 @@ def process_pagos(pdf_file, excel_file, tipo):
             _debug_print(f"Tabla perfiles construida. filas={len(df_display)}")
             if df_display.empty:
                 return None, "No se encontraron perfiles en el PDF o no fue posible cruzarlos por fecha."
+            return df_display, None
         else:
             df_pdf = validator_obj._extraer_conteo_pdf(pdf_path, tipo)
             if df_pdf is None or df_pdf.empty:
@@ -274,7 +292,10 @@ def process_pagos(pdf_file, excel_file, tipo):
                     pdf_cnt = format_count(pdf_match["CANTIDAD"].sum()) if not pdf_match.empty else 0
                     if float(pdf_cnt or 0) == 0:
                         continue
-                    excel_cnt = format_count(conteo_excel.get(servicio, 0))
+                    # Emparejar por clave robusta (tolera comillas/conjunciones).
+                    excel_cnt = format_count(
+                        conteo_excel.get(validator_obj._clave_equipo(servicio), 0)
+                    )
                     estado = "OK" if pdf_cnt == excel_cnt else "Valores diferentes"
                     rows.append(
                         {
@@ -292,9 +313,8 @@ def process_pagos(pdf_file, excel_file, tipo):
             _debug_print("No hay datos para comparar en process_pagos.")
             return None, "No se encontraron datos para comparar."
 
-        table_html = build_colored_table(df_display)
         _debug_print(f"Tabla final construida en process_pagos. filas={len(df_display)}")
-        return table_html, None
+        return df_display, None
 
 
 # ---------------------------------------------------------------------------
@@ -371,3 +391,35 @@ def process_reconciliation(despr_files, trans_files, seguridad_files, recon_mode
             return [], "No se encontraron registros para el modo seleccionado.", df_transfers, df_seguridad
 
         return parts, None, df_transfers, df_seguridad
+
+
+# ---------------------------------------------------------------------------
+# Mano de obra (mapa de cargos: Informe de Costo vs registro de la ODS)
+# ---------------------------------------------------------------------------
+
+def process_mano_obra(informe_file, ods_file):
+    """Cross the Informe de Costo against the ODS registry, per worker.
+
+    Returns ``(table_html, message, df_result)`` where ``df_result`` keeps the
+    list-valued comparison cells (one element = match, two = mismatch) so the
+    Excel export can colour the same cells the HTML table highlights.
+    """
+    mano_obra = load_mano_obra_module()
+
+    with tempfile.TemporaryDirectory(prefix="web_ui_mano_obra_") as tmp_dir:
+        informe_path = os.path.join(tmp_dir, "informe.xlsx")
+        ods_path = os.path.join(tmp_dir, "ods.xlsx")
+        with open(informe_path, "wb") as handle:
+            handle.write(informe_file.getbuffer())
+        with open(ods_path, "wb") as handle:
+            handle.write(ods_file.getbuffer())
+
+        df_result = mano_obra.comparar_mano_obra(informe_path, ods_path)
+
+    if df_result is None or df_result.empty:
+        _debug_print("Mano de obra: ninguna persona cruzada entre Informe y ODS.")
+        return None, "Ninguna persona del Informe se encontró en la ODS (cruce por documento).", df_result
+
+    table_html = build_mano_obra_table(df_result)
+    _debug_print(f"Tabla mano de obra construida. filas={len(df_result)}")
+    return table_html, None, df_result

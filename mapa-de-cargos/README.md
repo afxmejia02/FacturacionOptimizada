@@ -48,20 +48,51 @@ el **devengado** y lo compara contra los **IBC** reportados en la planilla:
 - `IBC sin soporte` – coincide pero hay más de un IBC para la cédula.
 - `Devengado no encontrado` – el desprendible no traía devengado.
 
+### Mano de obra (Informe de Costo vs ODS)
+
+`mano_obra.py` define **`comparar_mano_obra(informe, ods)`**, que cruza el
+**Informe de Costo** (nómina) contra el registro de la **ODS** (empleados del
+contrato) por número de documento. Ambos Excel traen la misma información bajo
+nombres de columna distintos. El mapeo (`MAPEO_COLUMNAS`, con tipo de
+comparación) es:
+
+| Concepto | Informe | ODS | Tipo |
+|----------|---------|-----|------|
+| Documento (clave) | `Identificación` | `NumeroDocumento` | dígitos |
+| OS | derivada de `Nombre Centro Costo` (`…Os050…`→50) | `No_de_orden_de_servicio_conocido_por_el_contratista` | número |
+| Nombres / Apellidos | `Nombres` / `Apellidos` | `Nombres` / `Apellidos` | texto |
+| Cargo | `Cargo` | `CargoContratoLaboral` | texto |
+| Fecha de Ingreso | `Fecha de Ingreso` | `Fecha_de_inicio_de_actividades_…` | fecha |
+| Fecha de retiro | `Fecha de retiro` | `Fecha_fin_de_actividades_…` | fecha |
+| Días Trabajados | `Días Trabajados` | `DiasTrabajadosEnMes` | número |
+
+El Informe se lee de la hoja `Informe` con el encabezado real en la fila 10;
+como varias columnas con tildes llegan corruptas en el xlsx, las columnas usadas
+se referencian **por posición** y se renombran. El resultado es un DataFrame
+donde cada campo es una **lista**: `[valor]` si ambos coinciden,
+`[valor_informe, valor_ods]` si difieren; más una columna `Estado revisión`
+(`ok` o `valores no coinciden: <campos>`). La comparación normaliza por tipo
+(texto sin acentos, fecha por día, número entero), de modo que `2025-06-08
+00:00:00` y `2025-06-08` se consideran iguales.
+
 ## Uso
 
 A través de la interfaz Streamlit (ver el [README raíz](../README.md)):
-herramientas **“Mapa de cargos - transferencias”** y
-**“Mapa de cargos - seguridad social”**. En transferencias se elige el formato
-(TABARCA / ITALCO). El resultado se puede descargar como Excel con estilos.
+herramientas **“Mapa de cargos - transferencias”**,
+**“Mapa de cargos - seguridad social”** y **“Mapa de cargos - mano de obra”**.
+En transferencias se elige el formato (TABARCA / ITALCO). En mano de obra se
+suben los dos Excel (Informe y ODS) y se resalta **solo la celda** del campo
+inconsistente, no toda la fila. Todos los resultados se descargan como Excel.
 
 ## Archivos
 
 | Archivo | Descripción |
 |---------|-------------|
-| `gui_app.py` | Lógica de conciliación + GUI de escritorio. |
+| `gui_app.py` | Lógica de conciliación (transferencias / seguridad social) + GUI de escritorio. |
+| `mano_obra.py` | Comparación Informe de Costo vs ODS (mano de obra). |
 | `main.ipynb` | Notebook de referencia (incluye la exploración del formato ITALCO). |
 | `ssocial.ipynb` | Notebook de exploración de seguridad social. |
+| `mano-obra.ipynb` | Notebook de exploración de la comparación de mano de obra. |
 | `requirements.txt` | Dependencias del módulo. |
 
 > La carpeta `docs/` contiene documentos reales de nómina y está excluida por

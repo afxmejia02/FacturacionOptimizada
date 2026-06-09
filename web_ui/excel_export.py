@@ -111,6 +111,98 @@ def _apply_row_status_styles(worksheet) -> None:
             current.font = font
 
 
+def _mano_obra_cell_text(value) -> str:
+    """Blank out NaN/None when flattening a comparison value for Excel."""
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value)
+
+
+def build_mano_obra_excel_bytes(
+    df: pd.DataFrame | None,
+    source_labels: tuple[str, str] = ("Informe", "ODS"),
+    estado_col: str = "Estado revisión",
+) -> bytes:
+    """Return the mano-de-obra validation workbook, colouring only diff cells.
+
+    Comparison columns hold lists (one element = match, two = mismatch). Each
+    such column becomes a single text column; only the cells with a mismatch get
+    a red fill, leaving the rest of the row untouched.
+    """
+    output = io.BytesIO()
+    sheet_name = "Mano_de_obra"
+
+    if df is None or df.empty:
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            pd.DataFrame(columns=["Documento", estado_col]).to_excel(
+                writer, sheet_name=sheet_name, index=False
+            )
+        output.seek(0)
+        return output.getvalue()
+
+    comparison_cols = [
+        col
+        for col in df.columns
+        if df[col].map(lambda v: isinstance(v, (list, tuple))).any()
+    ]
+
+    str_df = df.copy()
+    diff_positions = []  # (row index 0-based, column name) of mismatching cells
+    for col in comparison_cols:
+        flattened = []
+        for row_idx, value in enumerate(df[col].tolist()):
+            if isinstance(value, (list, tuple)) and len(value) > 1:
+                flattened.append(
+                    f"{source_labels[0]}: {_mano_obra_cell_text(value[0])} | "
+                    f"{source_labels[1]}: {_mano_obra_cell_text(value[1])}"
+                )
+                diff_positions.append((row_idx, col))
+            elif isinstance(value, (list, tuple)):
+                flattened.append(_mano_obra_cell_text(value[0]) if value else "")
+            else:
+                flattened.append(_mano_obra_cell_text(value))
+        str_df[col] = flattened
+
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        str_df.to_excel(writer, sheet_name=sheet_name, index=False)
+        worksheet = writer.book[sheet_name]
+
+        header_to_col = {
+            str(cell.value): cell.column for cell in worksheet[1] if cell.value is not None
+        }
+        diff_fill = PatternFill(fill_type="solid", fgColor="F8D7DA")
+        diff_font = Font(color="721C24", bold=True)
+        ok_fill = PatternFill(fill_type="solid", fgColor="D4EDDA")
+        ok_font = Font(color="155724")
+
+        # Colour only the individual cells that don't match.
+        for row_idx, col_name in diff_positions:
+            column = header_to_col.get(col_name)
+            if column is None:
+                continue
+            cell = worksheet.cell(row=row_idx + 2, column=column)  # +2: header + 1-based
+            cell.fill = diff_fill
+            cell.font = diff_font
+
+        # Colour the Estado column green/red per row (status only, not the row).
+        estado_column = header_to_col.get(estado_col)
+        if estado_column is not None:
+            for row_idx in range(2, worksheet.max_row + 1):
+                cell = worksheet.cell(row=row_idx, column=estado_column)
+                if str(cell.value or "").strip().lower() == "ok":
+                    cell.fill, cell.font = ok_fill, ok_font
+                else:
+                    cell.fill, cell.font = diff_fill, diff_font
+
+    output.seek(0)
+    return output.getvalue()
+
+
 def build_reconciliation_excel_bytes(
     df_transfers: pd.DataFrame | None,
     df_seguridad: pd.DataFrame | None,

@@ -1,8 +1,11 @@
 # Web UI (Streamlit)
 
-Interfaz **Streamlit** que reúne las tres revisiones del proyecto y reutiliza la
-lógica de `facturacion/gui_validation_app.py` y `mapa-de-cargos/gui_app.py` sin
-abrir ninguna ventana de escritorio.
+Interfaz **Streamlit** que reúne las revisiones del proyecto y reutiliza la
+lógica de `facturacion/gui_validation_app.py`, `mapa-de-cargos/gui_app.py` y
+`mapa-de-cargos/mano_obra.py` sin abrir ninguna ventana de escritorio.
+
+Herramientas disponibles: validación de pagos, mapa de cargos (transferencias /
+seguridad social) y **mapa de cargos – mano de obra** (Informe de Costo vs ODS).
 
 ## Estructura
 
@@ -10,8 +13,8 @@ abrir ninguna ventana de escritorio.
 |---------|-----------------|
 | `app.py` | Punto de entrada. Sólo UI: formularios, estado de sesión y render. |
 | `processing.py` | Orquestación: guarda los archivos subidos, llama a los módulos de extracción y arma los resultados. |
-| `excel_export.py` | Construye el `.xlsx` descargable con estilos (colores por estado, formato moneda). |
-| `rendering.py` | Tablas HTML coloreadas y formato de valores (sin dependencia de Streamlit). |
+| `excel_export.py` | Construye el `.xlsx` descargable con estilos (colores por estado/celda, formato moneda). |
+| `rendering.py` | Tablas HTML coloreadas y formato de valores (sin dependencia de Streamlit). En mano de obra colorea **solo la celda** inconsistente. |
 | `codigos.py` | Conjunto `excluded_codes` usado al filtrar perfiles. |
 
 El flujo es: `app.py` (UI) → `processing.py` (orquestación) → módulos de

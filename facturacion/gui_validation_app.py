@@ -234,6 +234,38 @@ class ServicesValidationApp:
         texto = re.sub(r"\s+", " ", texto)
         return texto.strip()
 
+    def _clave_equipo(self, texto):
+        """Clave robusta para emparejar equipos/servicios entre PDF y Excel.
+
+        Pliega acentos y mayúsculas, descarta comillas/paréntesis/comas y otros
+        signos, y elimina las conjunciones sueltas (y/o/e/u). Así
+        ``Camperos y camionetas ... (10 Horas)`` (PDF) empareja con
+        ``Camperos o camionetas ... (10 Horas)`` (Excel), pero sigue siendo
+        distinto de la variante ``(24 Horas)`` porque conserva los dígitos.
+        """
+        if texto is None:
+            return ""
+        plano = unicodedata.normalize("NFKD", str(texto)).encode("ascii", "ignore").decode().lower()
+        plano = re.sub(r"[^a-z0-9]+", " ", plano)
+        plano = re.sub(r"\b[yoeu]\b", " ", plano)
+        return re.sub(r"\s+", " ", plano).strip()
+
+    def _leer_excel_facturacion(self, path_hist):
+        """Lee el Excel detectando la fila de encabezado real.
+
+        Algunos cuadros traen filas de título antes de la cabecera
+        ``COD. TAR. | DESCRIPCION TARIFA | ...``; se localiza esa fila y se usa
+        como encabezado en vez de asumir la primera fila.
+        """
+        crudo = pd.read_excel(path_hist, header=None)
+        fila_encabezado = 0
+        for i in range(min(15, len(crudo))):
+            celdas = {self._normalizar_busqueda(v) for v in crudo.iloc[i].tolist()}
+            if "descripcion tarifa" in celdas:
+                fila_encabezado = i
+                break
+        return pd.read_excel(path_hist, header=fila_encabezado)
+
     def _normalizar_perfil(self, valor):
         if not isinstance(valor, str):
             return valor
@@ -544,7 +576,7 @@ class ServicesValidationApp:
         if fecha_reporte is None:
             raise ValueError("No fue posible detectar la fecha de referencia en el PDF.")
 
-        df_hist = pd.read_excel(path_hist)
+        df_hist = self._leer_excel_facturacion(path_hist)
         if "DESCRIPCION TARIFA" not in df_hist.columns:
             raise KeyError("El archivo Excel no contiene la columna 'DESCRIPCION TARIFA'.")
 
@@ -595,7 +627,7 @@ class ServicesValidationApp:
         if fecha_reporte is None:
             raise ValueError("No reference date detected in PDF.")
 
-        df_hist = pd.read_excel(path_hist)
+        df_hist = self._leer_excel_facturacion(path_hist)
         if "DESCRIPCION TARIFA" not in df_hist.columns:
             raise KeyError("Excel file missing 'DESCRIPCION TARIFA' column.")
 
@@ -610,10 +642,10 @@ class ServicesValidationApp:
 
         df_fecha = df_largo[df_largo["FECHA"] == fecha_reporte].copy()
         df_fecha = df_fecha[df_fecha["VALOR"].notna()]
-        df_fecha["DESCRIPCION TARIFA"] = df_fecha["DESCRIPCION TARIFA"].apply(self._normalizar_texto_equipo)
-        df_fecha = df_fecha.groupby(["DESCRIPCION TARIFA"], as_index=False)["VALOR"].sum()
+        # Clave robusta para que el emparejamiento tolere comillas/conjunciones.
+        df_fecha["PERFIL_NORM"] = df_fecha["DESCRIPCION TARIFA"].apply(self._clave_equipo)
+        df_fecha = df_fecha.groupby(["PERFIL_NORM"], as_index=False)["VALOR"].sum()
         df_fecha = df_fecha[df_fecha["VALOR"] != 0]
-        df_fecha["PERFIL_NORM"] = df_fecha["DESCRIPCION TARIFA"]
         return df_fecha.set_index("PERFIL_NORM")["VALOR"].to_dict()
 
     def _comparar_conteos(self, df_pdf, path_excel):
@@ -628,7 +660,7 @@ class ServicesValidationApp:
             for _, row in pdf_agg[pdf_agg["FECHA"] == fecha].iterrows():
                 servicio = row["TIPO DE EQUIPO"]
                 pdf_cnt = row["CANTIDAD"]
-                excel_cnt = conteo_excel.get(servicio, 0)
+                excel_cnt = conteo_excel.get(self._clave_equipo(servicio), 0)
                 diferencias.append({
                     "Fecha": fecha,
                     "Servicio": servicio,

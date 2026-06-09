@@ -45,6 +45,73 @@ def build_colored_table(df_display: pd.DataFrame) -> str:
     return "".join(parts)
 
 
+def _cell_text(value) -> str:
+    """Render a single comparison value, blanking out NaN/None."""
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value)
+
+
+def build_mano_obra_table(
+    df_display: pd.DataFrame,
+    source_labels: tuple[str, str] = ("Informe", "ODS"),
+    estado_col: str = "Estado revisión",
+) -> str:
+    """Render the mano-de-obra comparison, colouring only the inconsistent cells.
+
+    Comparison columns hold lists: a single element means both sources agree
+    (shown plain); two elements means they differ (shown as ``Informe / ODS`` on
+    a red cell). The rest of the row keeps a neutral background, so only the
+    column with the inconsistency is highlighted.
+    """
+    headers = list(df_display.columns)
+    base_td = "border:1px solid #ddd; padding:8px; vertical-align:top;"
+    diff_td = base_td + " background-color:#f8d7da; color:#721c24; font-weight:bold;"
+    ok_td = base_td + " background-color:#d4edda; color:#155724;"
+
+    parts = [
+        '<table style="width:100%; border-collapse:collapse; font-family:Arial,sans-serif;">',
+        '<thead><tr>',
+    ]
+    for header in headers:
+        parts.append(
+            '<th style="border:1px solid #ddd; padding:8px; text-align:left; background:#f4f4f4;">'
+            f"{header}</th>"
+        )
+    parts.append('</tr></thead><tbody>')
+
+    for _, row in df_display.iterrows():
+        parts.append('<tr>')
+        for header in headers:
+            value = row[header]
+            if isinstance(value, (list, tuple)):
+                if len(value) <= 1:
+                    text = _cell_text(value[0]) if value else ""
+                    style = base_td
+                else:
+                    text = (
+                        f"<b>{source_labels[0]}:</b> {_cell_text(value[0])}<br>"
+                        f"<b>{source_labels[1]}:</b> {_cell_text(value[1])}"
+                    )
+                    style = diff_td
+            elif header == estado_col:
+                text = _cell_text(value)
+                style = ok_td if text.strip().lower() == "ok" else diff_td
+            else:
+                text = _cell_text(value)
+                style = base_td
+            parts.append(f'<td style="{style}">{text}</td>')
+        parts.append('</tr>')
+
+    parts.append('</tbody></table>')
+    return "".join(parts)
+
+
 def format_count(value):
     """Normalise a count to int when it has no fractional part, else float."""
     if value is None:
@@ -57,7 +124,7 @@ def format_count(value):
     if _np is not None and isinstance(value, _np.generic):
         value = value.item()
     try:
-        numeric = float(value)
+        numeric = round(float(value), 6)  # absorbe el ruido de coma flotante (483.46000000000004 -> 483.46)
         if numeric.is_integer():
             return int(numeric)
         return numeric

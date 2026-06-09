@@ -15,27 +15,39 @@ import traceback
 import pandas as pd
 import streamlit as st
 
-from excel_export import build_reconciliation_excel_bytes
-from processing import build_perfiles_table, process_pagos, process_reconciliation
+from excel_export import build_mano_obra_excel_bytes, build_reconciliation_excel_bytes
+from processing import process_mano_obra, process_pagos, process_reconciliation
 from rendering import build_colored_table
 
 TOOL_LABELS = {
     "pagos": "Validación PDF + Excel",
     "mapa_transferencias": "Mapa de cargos - transferencias",
     "mapa_seguridad": "Mapa de cargos - seguridad social",
+    "mapa_mano_obra": "Mapa de cargos - mano de obra",
+}
+
+_RESULT_KEYS = {
+    "pagos_result_df": None,
+    "pagos_result_tipo": None,
+    "recon_transfer_df": None,
+    "recon_seguridad_df": None,
+    "recon_mode": None,
+    "recon_parts": [],
+    "mano_obra_df": None,
+    "mano_obra_html": None,
 }
 
 
 def _init_session_state() -> None:
-    defaults = {
-        "perfiles_result_df": None,
-        "perfiles_result_ready": False,
-        "recon_transfer_df": None,
-        "recon_seguridad_df": None,
-        "recon_mode": None,
-    }
+    defaults = {**_RESULT_KEYS, "active_tool": None}
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
+
+
+def _reset_results() -> None:
+    """Clear every stored result so one tool's output never lingers under another."""
+    for key, value in _RESULT_KEYS.items():
+        st.session_state[key] = value
 
 
 def _render_pagos_form() -> None:
@@ -56,34 +68,20 @@ def _render_pagos_form() -> None:
 
     try:
         with st.spinner("Procesando archivos..."):
-            table_html, message = process_pagos(pdf_file, excel_file, tipo)
+            df_display, message = process_pagos(pdf_file, excel_file, tipo)
         if message:
             st.info(message)
-            st.session_state.perfiles_result_df = None
-            st.session_state.perfiles_result_ready = False
-        elif table_html and tipo != "perfiles":
-            st.markdown(table_html, unsafe_allow_html=True)
-        elif tipo != "perfiles":
-            st.session_state.perfiles_result_df = None
-            st.session_state.perfiles_result_ready = False
+            st.session_state.pagos_result_df = None
+            st.session_state.pagos_result_tipo = None
+        else:
+            st.session_state.pagos_result_df = df_display
+            st.session_state.pagos_result_tipo = tipo
     except Exception as exc:
         print("[ERROR][web_ui] Procesamiento fallido en pagos")
         traceback.print_exc()
-        st.session_state.perfiles_result_df = None
-        st.session_state.perfiles_result_ready = False
+        st.session_state.pagos_result_df = None
+        st.session_state.pagos_result_tipo = None
         st.error(f"Procesamiento fallido: {exc}")
-
-    if tipo == "perfiles" and pdf_file and excel_file:
-        try:
-            with st.spinner("Construyendo tabla por fechas..."):
-                st.session_state.perfiles_result_df = build_perfiles_table(pdf_file, excel_file)
-                st.session_state.perfiles_result_ready = True
-        except Exception as exc:
-            print("[ERROR][web_ui] Construccion de tabla por fecha fallida")
-            traceback.print_exc()
-            st.session_state.perfiles_result_df = None
-            st.session_state.perfiles_result_ready = False
-            st.error(f"No se pudo construir la tabla por fecha: {exc}")
 
 
 def _render_reconciliation_form(app_choice: str) -> None:
@@ -143,35 +141,67 @@ def _render_reconciliation_form(app_choice: str) -> None:
         st.session_state.recon_mode = None
 
 
-def _render_perfiles_results() -> None:
-    if not (
-        st.session_state.perfiles_result_ready
-        and isinstance(st.session_state.perfiles_result_df, pd.DataFrame)
-    ):
+def _render_mano_obra_form() -> None:
+    st.caption(
+        "Cruza el **Informe de Costo** contra el registro de la **ODS** por número "
+        "de documento. Resalta solo la celda del campo que no coincide."
+    )
+    informe_file = st.file_uploader(
+        "Excel Informe de Costo", type=["xlsx", "xls"], key="mano_obra_informe"
+    )
+    ods_file = st.file_uploader(
+        "Excel ODS (empleados)", type=["xlsx", "xls"], key="mano_obra_ods"
+    )
+    submit = st.form_submit_button("Procesar")
+    if not submit:
         return
 
-    df_perfiles = st.session_state.perfiles_result_df
-    if df_perfiles.empty:
+    if not informe_file:
+        st.error("Por favor sube el Excel del Informe de Costo.")
+        return
+    if not ods_file:
+        st.error("Por favor sube el Excel de la ODS.")
+        return
+
+    try:
+        with st.spinner("Comparando mano de obra..."):
+            table_html, message, df_result = process_mano_obra(informe_file, ods_file)
+        if message:
+            st.info(message)
+            st.session_state.mano_obra_df = None
+            st.session_state.mano_obra_html = None
+        else:
+            st.session_state.mano_obra_df = df_result
+            st.session_state.mano_obra_html = table_html
+    except Exception as exc:
+        print("[ERROR][web_ui] Procesamiento de mano de obra fallido")
+        traceback.print_exc()
+        st.error(f"Procesamiento de mano de obra falló: {exc}")
+        st.session_state.mano_obra_df = None
+        st.session_state.mano_obra_html = None
+
+
+def _render_pagos_results() -> None:
+    df_pagos = st.session_state.get("pagos_result_df")
+    if not isinstance(df_pagos, pd.DataFrame) or df_pagos.empty:
         return
 
     st.subheader("Resultados por fecha")
-    available_dates = sorted(df_perfiles["Fecha"].dropna().astype(str).unique().tolist())
-    selected_date = st.selectbox(
-        "Filtrar por fecha",
-        ["Todas las fechas"] + available_dates,
-        key="perfiles_date_filter",
-    )
+    if "Fecha" in df_pagos.columns:
+        available_dates = sorted(df_pagos["Fecha"].dropna().astype(str).unique().tolist())
+        selected_date = st.selectbox(
+            "Filtrar por fecha",
+            ["Todas las fechas"] + available_dates,
+            key="pagos_date_filter",
+        )
+        if selected_date != "Todas las fechas":
+            df_pagos = df_pagos[df_pagos["Fecha"].astype(str) == selected_date].copy()
 
-    if selected_date != "Todas las fechas":
-        df_perfiles = df_perfiles[df_perfiles["Fecha"].astype(str) == selected_date].copy()
-
-    st.markdown(build_colored_table(df_perfiles), unsafe_allow_html=True)
+    st.markdown(build_colored_table(df_pagos), unsafe_allow_html=True)
 
 
 def _render_reconciliation_results() -> None:
-    if "recon_parts" not in st.session_state or not st.session_state.recon_mode:
-        return
-    if not st.session_state.recon_parts:
+    if not st.session_state.recon_mode or not st.session_state.recon_parts:
         return
 
     for title, table_html in st.session_state.recon_parts:
@@ -197,6 +227,25 @@ def _render_reconciliation_results() -> None:
     )
 
 
+def _render_mano_obra_results() -> None:
+    table_html = st.session_state.get("mano_obra_html")
+    df_result = st.session_state.get("mano_obra_df")
+    if not table_html or df_result is None:
+        return
+
+    st.subheader("Validación mano de obra")
+    st.markdown(table_html, unsafe_allow_html=True)
+
+    excel_bytes = build_mano_obra_excel_bytes(df_result)
+    st.download_button(
+        label="Descargar Excel con resultados",
+        data=excel_bytes,
+        file_name="validacion_mano_obra.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="download_mano_obra",
+    )
+
+
 def main() -> None:
     st.set_page_config(page_title="Validación y conciliación", layout="wide")
     st.title("Sistema de validación y conciliación")
@@ -214,14 +263,26 @@ def main() -> None:
         horizontal=True,
     )
 
+    # Al cambiar de herramienta, descartar resultados previos (la tabla de una
+    # revisión no debe quedar visible bajo otra).
+    if app_choice != st.session_state.active_tool:
+        _reset_results()
+        st.session_state.active_tool = app_choice
+
     with st.form("validation_form", clear_on_submit=False):
         if app_choice == "pagos":
             _render_pagos_form()
+        elif app_choice == "mapa_mano_obra":
+            _render_mano_obra_form()
         else:
             _render_reconciliation_form(app_choice)
 
-    _render_perfiles_results()
-    _render_reconciliation_results()
+    if app_choice == "pagos":
+        _render_pagos_results()
+    elif app_choice == "mapa_mano_obra":
+        _render_mano_obra_results()
+    else:
+        _render_reconciliation_results()
 
 
 if __name__ == "__main__":
