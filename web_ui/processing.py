@@ -331,8 +331,9 @@ def _save_uploads(uploaded_files, target_dir):
 def process_reconciliation(despr_files, trans_files, seguridad_files, recon_mode, transfer_format="tabarca"):
     """Reconcile payslips against transfers or social-security (IBC).
 
-    Returns ``(parts, message, df_transfers, df_seguridad)`` where ``parts`` is a
-    list of ``(title, html_table)`` tuples for display.
+    Returns ``(parts, message, df_transfers, df_seguridad, tables)`` where
+    ``parts`` is a list of ``(title, html_table)`` for display and ``tables`` is
+    the matching list of ``(title, DataFrame)`` used to build the PDF export.
     """
     payroll = load_payroll_module()
     PayrollApp = payroll.PayrollReconciliationApp
@@ -373,7 +374,7 @@ def process_reconciliation(despr_files, trans_files, seguridad_files, recon_mode
             df_seguridad = pd.DataFrame()
 
         if (df_transfers is None or df_transfers.empty) and (df_seguridad is None or df_seguridad.empty):
-            return [], "No se encontraron registros o diferencias.", df_transfers, df_seguridad
+            return [], "No se encontraron registros o diferencias.", df_transfers, df_seguridad, []
 
         df_display_t = df_transfers.copy() if df_transfers is not None else pd.DataFrame()
         df_display_s = df_seguridad.copy() if df_seguridad is not None else pd.DataFrame()
@@ -382,15 +383,18 @@ def process_reconciliation(despr_files, trans_files, seguridad_files, recon_mode
         df_display_s = format_dataframe(df_display_s, payroll_obj.formatear_valores)
 
         parts = []
+        tables = []
         if recon_mode == "transfers" and df_display_t is not None and not df_display_t.empty:
             parts.append(("Revisión Transferencias", build_colored_table(df_display_t)))
+            tables.append(("Revisión Transferencias", df_display_t))
         if recon_mode == "seguridad" and df_display_s is not None and not df_display_s.empty:
             parts.append(("Revisión Seguridad Social (IBC)", build_colored_table(df_display_s)))
+            tables.append(("Revisión Seguridad Social (IBC)", df_display_s))
 
         if not parts:
-            return [], "No se encontraron registros para el modo seleccionado.", df_transfers, df_seguridad
+            return [], "No se encontraron registros para el modo seleccionado.", df_transfers, df_seguridad, []
 
-        return parts, None, df_transfers, df_seguridad
+        return parts, None, df_transfers, df_seguridad, tables
 
 
 # ---------------------------------------------------------------------------

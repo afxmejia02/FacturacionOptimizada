@@ -10,12 +10,14 @@ Run locally with:  ``streamlit run app.py``
 """
 from __future__ import annotations
 
+import os
 import traceback
 
 import pandas as pd
 import streamlit as st
 
 from excel_export import build_mano_obra_excel_bytes, build_reconciliation_excel_bytes
+from pdf_export import build_results_pdf
 from processing import process_mano_obra, process_pagos, process_reconciliation
 from rendering import build_colored_table
 
@@ -29,12 +31,16 @@ TOOL_LABELS = {
 _RESULT_KEYS = {
     "pagos_result_df": None,
     "pagos_result_tipo": None,
+    "pagos_files": None,
     "recon_transfer_df": None,
     "recon_seguridad_df": None,
     "recon_mode": None,
     "recon_parts": [],
+    "recon_tables": [],
+    "recon_files": None,
     "mano_obra_df": None,
     "mano_obra_html": None,
+    "mano_obra_files": None,
 }
 
 
@@ -48,6 +54,34 @@ def _reset_results() -> None:
     """Clear every stored result so one tool's output never lingers under another."""
     for key, value in _RESULT_KEYS.items():
         st.session_state[key] = value
+
+
+def _render_pdf_export(key, default_name, titulo, archivos, secciones, source_labels=None) -> None:
+    """Bloque común: nombre del PDF + botón de descarga + guardado local opcional."""
+    st.markdown("**Exportar resultados a PDF**")
+    nombre = st.text_input("Nombre del archivo PDF", value=default_name, key=f"pdfname_{key}")
+    nombre = (nombre or default_name).strip() or default_name
+    if not nombre.lower().endswith(".pdf"):
+        nombre = f"{nombre}.pdf"
+
+    try:
+        pdf_bytes = build_results_pdf(titulo, archivos, secciones, source_labels=source_labels)
+    except Exception as exc:
+        print("[ERROR][web_ui] Generacion de PDF fallida")
+        traceback.print_exc()
+        st.error(f"No se pudo generar el PDF: {exc}")
+        return
+    #guardar una copia local del PDF generado (el usuario selecciona manualmente la ruta)
+    #examinar el dispositivo, se abre la ventana de archivos
+    st.download_button(
+        label="Descargar PDF",
+        data=pdf_bytes,
+        file_name=nombre,
+        mime="application/pdf",
+        key=f"pdfdl_{key}",
+    )
+
+
 
 
 def _render_pagos_form() -> None:
@@ -73,9 +107,11 @@ def _render_pagos_form() -> None:
             st.info(message)
             st.session_state.pagos_result_df = None
             st.session_state.pagos_result_tipo = None
+            st.session_state.pagos_files = None
         else:
             st.session_state.pagos_result_df = df_display
             st.session_state.pagos_result_tipo = tipo
+            st.session_state.pagos_files = {"PDF": pdf_file.name, "Excel": excel_file.name}
     except Exception as exc:
         print("[ERROR][web_ui] Procesamiento fallido en pagos")
         traceback.print_exc()
@@ -120,7 +156,7 @@ def _render_reconciliation_form(app_choice: str) -> None:
 
     try:
         with st.spinner("Procesando conciliación..."):
-            parts, message, df_transfers, df_seguridad = process_reconciliation(
+            parts, message, df_transfers, df_seguridad, tables = process_reconciliation(
                 despr_files, trans_files, seguridad_files, recon_mode, transfer_format
             )
             st.session_state.recon_transfer_df = df_transfers
@@ -129,13 +165,24 @@ def _render_reconciliation_form(app_choice: str) -> None:
         if message:
             st.info(message)
             st.session_state.recon_parts = []
+            st.session_state.recon_tables = []
+            st.session_state.recon_files = None
         else:
             st.session_state.recon_parts = parts
+            st.session_state.recon_tables = tables
+            entrada_extra = trans_files if recon_mode == "transfers" else seguridad_files
+            etiqueta_extra = "Transferencias" if recon_mode == "transfers" else "Seguridad social"
+            st.session_state.recon_files = {
+                "Desprendibles": [f.name for f in despr_files],
+                etiqueta_extra: [f.name for f in entrada_extra],
+            }
     except Exception as exc:
         print("[ERROR][web_ui] Procesamiento de conciliacion fallido")
         traceback.print_exc()
         st.error(f"Procesamiento de conciliación falló: {exc}")
         st.session_state.recon_parts = []
+        st.session_state.recon_tables = []
+        st.session_state.recon_files = None
         st.session_state.recon_transfer_df = None
         st.session_state.recon_seguridad_df = None
         st.session_state.recon_mode = None
@@ -170,9 +217,14 @@ def _render_mano_obra_form() -> None:
             st.info(message)
             st.session_state.mano_obra_df = None
             st.session_state.mano_obra_html = None
+            st.session_state.mano_obra_files = None
         else:
             st.session_state.mano_obra_df = df_result
             st.session_state.mano_obra_html = table_html
+            st.session_state.mano_obra_files = {
+                "Informe de Costo": informe_file.name,
+                "ODS": ods_file.name,
+            }
     except Exception as exc:
         print("[ERROR][web_ui] Procesamiento de mano de obra fallido")
         traceback.print_exc()
@@ -182,11 +234,12 @@ def _render_mano_obra_form() -> None:
 
 
 def _render_pagos_results() -> None:
-    df_pagos = st.session_state.get("pagos_result_df")
-    if not isinstance(df_pagos, pd.DataFrame) or df_pagos.empty:
+    df_full = st.session_state.get("pagos_result_df")
+    if not isinstance(df_full, pd.DataFrame) or df_full.empty:
         return
 
     st.subheader("Resultados por fecha")
+    df_pagos = df_full
     if "Fecha" in df_pagos.columns:
         available_dates = sorted(df_pagos["Fecha"].dropna().astype(str).unique().tolist())
         selected_date = st.selectbox(
@@ -198,6 +251,15 @@ def _render_pagos_results() -> None:
             df_pagos = df_pagos[df_pagos["Fecha"].astype(str) == selected_date].copy()
 
     st.markdown(build_colored_table(df_pagos), unsafe_allow_html=True)
+
+    tipo = st.session_state.get("pagos_result_tipo") or "pagos"
+    _render_pdf_export(
+        key="pagos",
+        default_name=f"resultado_{tipo}",
+        titulo=f"Validación de {tipo}",
+        archivos=st.session_state.get("pagos_files"),
+        secciones=[("", df_full)],  # el PDF incluye todas las fechas, no solo la filtrada
+    )
 
 
 def _render_reconciliation_results() -> None:
@@ -226,6 +288,19 @@ def _render_reconciliation_results() -> None:
         key=f"download_recon_{st.session_state.recon_mode}",
     )
 
+    nombre_base = (
+        "reconciliacion_transferencias"
+        if st.session_state.recon_mode == "transfers"
+        else "reconciliacion_seguridad_social"
+    )
+    _render_pdf_export(
+        key=f"recon_{st.session_state.recon_mode}",
+        default_name=nombre_base,
+        titulo="Conciliación de nómina",
+        archivos=st.session_state.get("recon_files"),
+        secciones=st.session_state.get("recon_tables") or [],
+    )
+
 
 def _render_mano_obra_results() -> None:
     table_html = st.session_state.get("mano_obra_html")
@@ -243,6 +318,15 @@ def _render_mano_obra_results() -> None:
         file_name="validacion_mano_obra.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="download_mano_obra",
+    )
+
+    _render_pdf_export(
+        key="mano_obra",
+        default_name="validacion_mano_obra",
+        titulo="Validación mano de obra",
+        archivos=st.session_state.get("mano_obra_files"),
+        secciones=[("", df_result)],
+        source_labels=("Informe", "ODS"),
     )
 
 
