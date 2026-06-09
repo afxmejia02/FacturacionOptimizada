@@ -3,7 +3,7 @@
 This file owns only the presentation/UI flow. The actual extraction and
 comparison logic lives in:
   - ``processing.py``    – orchestration (PDF/Excel validation, reconciliation)
-  - ``excel_export.py``  – downloadable Excel workbook
+  - ``pdf_export.py``    – downloadable PDF with the results
   - ``rendering.py``     – HTML tables and value formatting
 
 Run locally with:  ``streamlit run app.py``
@@ -16,7 +16,6 @@ import traceback
 import pandas as pd
 import streamlit as st
 
-from excel_export import build_mano_obra_excel_bytes, build_reconciliation_excel_bytes
 from pdf_export import build_results_pdf
 from processing import process_mano_obra, process_pagos, process_reconciliation
 from rendering import build_colored_table
@@ -270,24 +269,6 @@ def _render_reconciliation_results() -> None:
         st.subheader(title)
         st.markdown(table_html, unsafe_allow_html=True)
 
-    excel_bytes = build_reconciliation_excel_bytes(
-        st.session_state.recon_transfer_df,
-        st.session_state.recon_seguridad_df,
-        st.session_state.recon_mode,
-    )
-    file_name = (
-        "reconciliacion_transferencias.xlsx"
-        if st.session_state.recon_mode == "transfers"
-        else "reconciliacion_seguridad_social.xlsx"
-    )
-    st.download_button(
-        label="Descargar Excel con resultados",
-        data=excel_bytes,
-        file_name=file_name,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key=f"download_recon_{st.session_state.recon_mode}",
-    )
-
     nombre_base = (
         "reconciliacion_transferencias"
         if st.session_state.recon_mode == "transfers"
@@ -310,15 +291,6 @@ def _render_mano_obra_results() -> None:
 
     st.subheader("Validación mano de obra")
     st.markdown(table_html, unsafe_allow_html=True)
-
-    excel_bytes = build_mano_obra_excel_bytes(df_result)
-    st.download_button(
-        label="Descargar Excel con resultados",
-        data=excel_bytes,
-        file_name="validacion_mano_obra.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="download_mano_obra",
-    )
 
     _render_pdf_export(
         key="mano_obra",

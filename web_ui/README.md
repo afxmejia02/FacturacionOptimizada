@@ -13,8 +13,7 @@ seguridad social) y **mapa de cargos – mano de obra** (Informe de Costo vs ODS
 |---------|-----------------|
 | `app.py` | Punto de entrada. Sólo UI: formularios, estado de sesión y render. |
 | `processing.py` | Orquestación: guarda los archivos subidos, llama a los módulos de extracción y arma los resultados. |
-| `excel_export.py` | Construye el `.xlsx` descargable con estilos (colores por estado/celda, formato moneda). |
-| `pdf_export.py` | Construye el `.pdf` descargable (reportlab): multipágina, con título, nombres de los archivos ingresados y tablas coloreadas. |
+| `pdf_export.py` | Construye el `.pdf` descargable (reportlab): multipágina, con título, nombres de los archivos ingresados y tablas coloreadas. Es el **único** formato de exportación. |
 | `rendering.py` | Tablas HTML coloreadas y formato de valores (sin dependencia de Streamlit). En mano de obra colorea **solo la celda** inconsistente. |
 | `codigos.py` | Conjunto `excluded_codes` usado al filtrar perfiles. |
 
