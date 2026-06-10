@@ -12,11 +12,12 @@ Modelo de datos del resultado (``comparar_mano_obra``):
 - una fila por persona cruzada (presente en ambos archivos),
 - columna ``Documento`` (solo dígitos),
 - una columna por cada campo del ``MAPEO_COLUMNAS``, cuyo valor es una **lista**:
-  ``[valor]`` si ambos coinciden, ``[valor_informe, valor_ods]`` si difieren,
-- columna ``Estado revisión``: ``"ok"`` o ``"valores no coinciden: <campos>"``.
+  ``[valor]`` si ambos coinciden, ``[valor_informe, valor_ods]`` si difieren.
 
 Las listas son la única fuente de verdad: una celda con dos elementos es una
-inconsistencia, y eso es lo que la web y el Excel resaltan a nivel de celda.
+inconsistencia, y eso es lo que la web y el PDF resaltan a nivel de celda. (Ya
+no se emite una columna de estado/observaciones: el resaltado por celda es el
+único indicador de inconsistencia.)
 
 Notas de formato del Informe:
 
@@ -26,6 +27,14 @@ Notas de formato del Informe:
   usan se referencian **por posición** y se renombran a nombres limpios,
 - la orden de servicio no es una columna directa: se extrae del texto de
   ``Nombre Centro Costo`` (``…Os050…`` -> ``50``).
+
+Notas de comparación de fechas:
+
+- las fechas de actividades de la ODS (inicio/fin del trabajador para el
+  contrato comercial u orden de servicio) corresponden a la vigencia del
+  **contrato**, por lo que se comparan contra ``Fecha Inicio`` y
+  ``Fecha Vencimiento`` del Informe, **no** contra ``Fecha de Ingreso`` /
+  ``Fecha de retiro`` (vínculo laboral, un concepto distinto).
 """
 from __future__ import annotations
 
@@ -44,39 +53,46 @@ INFORME_COLS_POR_POSICION = {
     4: "Nombres",
     5: "Apellidos",
     6: "Cargo",
+    7: "Fecha Inicio",                 # vigencia del contrato (inicio)
+    8: "Fecha Vencimiento",            # vigencia del contrato (fin)
     10: "Nombre Centro Costo",
-    14: "Fecha de Ingreso",
-    15: "Fecha de retiro",
     16: "Dias Trabajados",
+    17: "Salario Diario Contratado",   # salario diario pactado en el Informe
 }
 
 # (etiqueta visible, columna en el Informe, columna en la ODS, tipo de comparación).
-# tipo: "texto" (mayúsculas/sin acentos), "fecha" (por día) o "numero".
+# tipo: "texto" (mayúsculas/sin acentos), "fecha" (por día), "numero" o "moneda"
+#       ("moneda" compara el valor numérico normalizado y lo muestra en COP).
 # Agrega aquí más campos a validar; el resto del flujo se adapta solo.
 MAPEO_COLUMNAS = [
     ("OS", "OS", "No_de_orden_de_servicio_conocido_por_el_contratista", "numero"),
     ("Nombres", "Nombres", "Nombres", "texto"),
     ("Apellidos", "Apellidos", "Apellidos", "texto"),
     ("Cargo", "Cargo", "CargoContratoLaboral", "texto"),
+    # Las fechas de actividades de la ODS son la vigencia del CONTRATO, así que
+    # se comparan contra Fecha Inicio / Fecha Vencimiento del Informe (no contra
+    # Fecha de Ingreso / Fecha de retiro, que son del vínculo laboral).
     (
-        "Fecha de Ingreso",
-        "Fecha de Ingreso",
+        "Fecha Inicio",
+        "Fecha Inicio",
         "Fecha_de_inicio_de_actividades_del_trabajador_para_el_contrato_comercial_u_orden_de_servicio",
         "fecha",
     ),
     (
-        "Fecha de retiro",
-        "Fecha de retiro",
+        "Fecha Vencimiento",
+        "Fecha Vencimiento",
         "Fecha_fin_de_actividades_del_trabajador_para_el_contrato_comercial_u_orden_de_servicio",
         "fecha",
     ),
     ("Días Trabajados", "Dias Trabajados", "DiasTrabajadosEnMes", "numero"),
+    # Salario diario: Informe ("Salario Diario Contratado") vs ODS
+    # ("SalarioDiarioPesos"). Se compara como valor numérico normalizado y se
+    # presenta formateado en pesos colombianos.
+    ("Salario", "Salario Diario Contratado", "SalarioDiarioPesos", "moneda"),
 ]
 
 COL_DOC_ODS = "NumeroDocumento"
 COL_DOCUMENTO = "Documento"
-COL_ESTADO = "Estado revisión"
-ESTADO_OK = "ok"
 
 
 def solo_digitos(valor) -> str:
@@ -104,6 +120,95 @@ def extraer_os(valor) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def normalizar_moneda(valor) -> float | None:
+    """Normaliza un valor monetario heterogéneo a ``float`` (o ``None``).
+
+    Reutilizable para comparar y formatear cualquier salario/importe. Tolera:
+
+    - ``None`` / ``NaN`` / cadenas vacías -> ``None``;
+    - valores ya numéricos (``int`` / ``float``);
+    - símbolo ``$``, espacios y demás caracteres no numéricos;
+    - separadores de miles/decimales en convención colombiana
+      (``1.234.567,89``) o anglosajona (``1,234,567.89``).
+
+    Así ``"$ 120.000"``, ``"120000"`` y ``120000.0`` resultan en el mismo
+    número y la comparación nunca depende de la forma del texto.
+    """
+    if valor is None:
+        return None
+    try:
+        if pd.isna(valor):
+            return None
+    except (TypeError, ValueError):
+        pass
+
+    # Si ya es numérico (no bool), usarlo directamente.
+    if isinstance(valor, bool):
+        return None
+    if isinstance(valor, (int, float)):
+        return float(valor)
+
+    texto = str(valor).strip()
+    if not texto:
+        return None
+
+    # Conservar solo dígitos y separadores; descarta "$", espacios, letras, etc.
+    texto = re.sub(r"[^\d,.\-]", "", texto)
+    if not texto or texto in {"-", ".", ",", "-.", "-,"}:
+        return None
+
+    # Resolver qué separador es el decimal y cuál el de miles.
+    if "," in texto and "." in texto:
+        # El separador que aparece más a la derecha es el decimal.
+        if texto.rfind(",") > texto.rfind("."):
+            texto = texto.replace(".", "").replace(",", ".")
+        else:
+            texto = texto.replace(",", "")
+    elif "," in texto:
+        partes = texto.split(",")
+        # ",XX" (1-2 dígitos finales) -> decimal; si no, separador de miles.
+        if len(partes) == 2 and 1 <= len(partes[-1]) <= 2:
+            texto = texto.replace(",", ".")
+        else:
+            texto = texto.replace(",", "")
+    elif "." in texto:
+        partes = texto.split(".")
+        if len(partes) > 2:
+            # Varios puntos -> todos son de miles (1.234.567).
+            texto = texto.replace(".", "")
+        elif len(partes[-1]) == 3:
+            # Un punto con 3 dígitos finales -> miles (120.000), no decimal.
+            texto = texto.replace(".", "")
+        # En otro caso (p. ej. "120.5") se deja como decimal.
+
+    try:
+        return float(texto)
+    except ValueError:
+        return None
+
+
+def formatear_cop(valor) -> str:
+    """Formatea un valor en moneda colombiana (COP): ``$120.000``.
+
+    - separador de miles con punto, sin notación científica;
+    - sin decimales cuando el valor es entero; con dos decimales (coma) si los
+      tiene (``$120.000,50``);
+    - cadena vacía cuando el valor no es interpretable como número.
+    """
+    numero = normalizar_moneda(valor)
+    if numero is None:
+        return ""
+
+    if float(numero).is_integer():
+        entero = int(round(numero))
+        # f"{n:,}" usa coma de miles; se intercambia por punto (formato COP).
+        return "$" + f"{entero:,}".replace(",", ".")
+
+    # Dos decimales: 1,234,567.89 -> 1.234.567,89
+    texto = f"{numero:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return "$" + texto
+
+
 def _es_vacio(valor) -> bool:
     if valor is None:
         return True
@@ -114,10 +219,18 @@ def _es_vacio(valor) -> bool:
 
 
 def _presentacion(valor, tipo) -> str:
-    """Valor 'bonito' que se muestra en la celda (fecha ISO, entero limpio, texto)."""
+    """Valor 'bonito' que se muestra en la celda (fecha ISO, entero, texto, COP)."""
     if tipo == "fecha":
+        # Normaliza a fecha por día (ignora la hora). Las fechas de estos Excel
+        # llegan como Timestamp; se comparan por su parte de fecha en ISO
+        # (``YYYY-MM-DD``) para que ``2025-06-08 00:00:00`` y ``2025-06-08``
+        # coincidan. No se fuerza ``dayfirst`` porque rompería las cadenas ISO
+        # (``2025-06-01`` se leería como 6 de enero). Nulos/vacíos/ inválidos
+        # -> "" (así dos fechas ausentes se consideran iguales, no difieren).
         fecha = pd.to_datetime(valor, errors="coerce")
         return "" if pd.isna(fecha) else fecha.strftime("%Y-%m-%d")
+    if tipo == "moneda":
+        return formatear_cop(valor)
     if tipo == "numero":
         if _es_vacio(valor):
             return ""
@@ -131,9 +244,17 @@ def _presentacion(valor, tipo) -> str:
 
 
 def _comparable(valor, tipo) -> str:
-    """Forma normalizada que decide si dos valores coinciden."""
+    """Forma normalizada que decide si dos valores coinciden.
+
+    Nunca compara cadenas crudas: cada tipo se reduce a una forma canónica
+    (texto sin acentos, fecha por día, número entero, o importe numérico) para
+    evitar falsos positivos por formato (``$120.000`` vs ``120000``, etc.).
+    """
     if tipo == "texto":
         return norm_texto(valor)
+    if tipo == "moneda":
+        numero = normalizar_moneda(valor)
+        return "" if numero is None else f"{numero:.2f}"
     return _presentacion(valor, tipo)  # fecha y numero ya quedan canónicos
 
 
@@ -182,7 +303,6 @@ def comparar_mano_obra(informe_source, ods_source, mapeo=MAPEO_COLUMNAS) -> pd.D
         otro = ods_por_doc.loc[doc]
 
         fila = {COL_DOCUMENTO: doc}
-        campos_diferentes = []
         for etiqueta, col_inf, col_ods, tipo in mapeo:
             val_inf = registro.get(col_inf)
             val_ods = otro.get(col_ods)
@@ -192,14 +312,9 @@ def comparar_mano_obra(informe_source, ods_source, mapeo=MAPEO_COLUMNAS) -> pd.D
                 fila[etiqueta] = [disp_inf]            # coinciden -> un solo elemento
             else:
                 fila[etiqueta] = [disp_inf, disp_ods]  # difieren -> ambos valores
-                campos_diferentes.append(etiqueta)
-
-        fila[COL_ESTADO] = (
-            ESTADO_OK
-            if not campos_diferentes
-            else "valores no coinciden: " + ", ".join(campos_diferentes)
-        )
         filas.append(fila)
 
-    columnas = [COL_DOCUMENTO] + [entrada[0] for entrada in mapeo] + [COL_ESTADO]
+    # Sin columna de estado/observaciones: el resaltado por celda (listas de dos
+    # elementos) es el único indicador de inconsistencia.
+    columnas = [COL_DOCUMENTO] + [entrada[0] for entrada in mapeo]
     return pd.DataFrame(filas, columns=columnas)

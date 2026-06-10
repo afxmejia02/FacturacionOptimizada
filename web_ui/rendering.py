@@ -59,7 +59,7 @@ def _cell_text(value) -> str:
 
 def build_mano_obra_table(
     df_display: pd.DataFrame,
-    source_labels: tuple[str, str] = ("Informe", "ODS"),
+    source_labels: tuple[str, str] = ("Informe", "Lista ODS"),
     estado_col: str = "Estado revisión",
 ) -> str:
     """Render the mano-de-obra comparison, colouring only the inconsistent cells.

@@ -28,8 +28,27 @@ import pdfplumber
 import re
 
 import os
+import unicodedata
 from pathlib import Path
 import threading
+
+
+# --- Detección robusta de renglones de soporte bancario (transferencias) -----
+# La etiqueta de destino real ("PAGO NOMINA BCA") varía entre soportes y puede
+# llegar con ruido de OCR. Solo se usa como señal de que la línea es un pago de
+# nómina; el cruce no depende de su forma exacta. Tolera confusiones típicas de
+# OCR: O/0, I/1, A/4.
+_RE_NOMINA = re.compile(r"N[O0]M[I1]N[A4]", re.IGNORECASE)
+
+# Importe monetario: admite miles con punto o coma y decimales opcionales.
+#   1.234.567,89 | 1,234,567.89 | 5156483 | 913,143.00
+_RE_IMPORTE = re.compile(r"\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?")
+
+# Documento del beneficiario (cédula/NIT): grupo de 5 a 15 dígitos.
+_RE_DOCUMENTO = re.compile(r"\b(\d{5,15})\b")
+
+# Cuenta / número de producto (opcional): grupo largo de 9+ dígitos.
+_RE_PRODUCTO = re.compile(r"\b(\d{9,})\b")
 
 
 class PayrollReconciliationApp:
@@ -286,6 +305,15 @@ class PayrollReconciliationApp:
                 foreground="red"
             ))
     
+    def _log(self, mensaje):
+        """Log de depuración (visible salvo que ``VALIDATION_DEBUG`` sea ``"0"``).
+
+        No depende del estado de instancia, por lo que funciona también cuando la
+        app se crea con ``__new__`` (como hace la web, sin abrir ventanas).
+        """
+        if os.environ.get("VALIDATION_DEBUG", "1") != "0":
+            print(f"[DEBUG][PayrollReconciliationApp] {mensaje}")
+
     def _process_desprendibles(self, folder_path, formato="tabarca"):
         """
         Extrae datos de desprendibles desde archivos PDF.
@@ -494,79 +522,108 @@ class PayrollReconciliationApp:
 
         return df
 
+    def _normalizar_linea_ocr(self, linea):
+        """Normaliza una línea para un matching tolerante a OCR.
+
+        Pliega acentos a ASCII, reemplaza espacios duros (NBSP) y colapsa
+        cualquier secuencia de espacios en uno solo. No altera los dígitos, solo
+        homogeneiza el texto para que las búsquedas no fallen por tildes o por
+        espaciado irregular del PDF/OCR.
+        """
+        texto = unicodedata.normalize("NFKD", str(linea or ""))
+        texto = texto.encode("ascii", "ignore").decode()
+        texto = texto.replace(" ", " ")
+        return re.sub(r"\s+", " ", texto).strip()
+
+    def _match_linea_transferencia(self, linea):
+        """Extrae ``{Documento, Cuenta, Nombre, Valor}`` de una línea de soporte.
+
+        Diseño robusto y genérico (no atado a un layout concreto). Tolera:
+
+        - **ausencia/presencia de la columna de fecha** (el bug original: el
+          patrón exigía una fecha de 8 dígitos que muchos soportes no traen);
+        - cualquier **formato monetario** (miles con punto o coma, con/sin
+          decimales) vía :func:`_limpiar_numero`;
+        - **espacios y OCR ruidoso** (se normaliza la línea antes de leerla);
+        - **variantes de la etiqueta de destino** ("PAGO NOMINA BCA",
+          "PAGO DE NOMINA", "PAGONOMINA"...): basta con que aparezca "NOMINA".
+
+        Estrategia por proximidad de campos en el renglón:
+          ``<nombre> <documento> [<producto/fecha/factura> ...] <...NOMINA...> <valor>``
+          - documento = primer grupo de 5-15 dígitos (cédula/NIT del beneficiario);
+          - valor = último importe de la línea (la columna "Vr. Pago" va al final);
+          - cuenta = primer grupo largo (9+ dígitos) tras el documento (opcional).
+
+        Devuelve ``None`` si la línea no parece un renglón de pago de nómina.
+        """
+        plano = self._normalizar_linea_ocr(linea)
+        if not plano:
+            return None
+
+        # 1) La línea debe parecer un pago de NÓMINA (señal tolerante a OCR).
+        if not _RE_NOMINA.search(plano):
+            return None
+
+        # 2) Documento del beneficiario: primer grupo de 5-15 dígitos.
+        m_doc = _RE_DOCUMENTO.search(plano)
+        if not m_doc:
+            return None
+        documento = m_doc.group(1)
+        nombre = plano[: m_doc.start()].strip(" -")
+
+        # 3) Valor: último importe de la línea (la columna de valor va al final).
+        importes = _RE_IMPORTE.findall(plano)
+        valor = self._limpiar_numero(importes[-1]) if importes else None
+        if valor is None:
+            return None
+
+        # 4) Cuenta/producto (opcional): primer grupo largo tras el documento.
+        cola = plano[m_doc.end():]
+        m_cta = _RE_PRODUCTO.search(cola)
+        cuenta = m_cta.group(1) if m_cta else None
+
+        return {
+            "Cuenta": cuenta,
+            "Tipo": "ITALCO",
+            "Documento": documento,
+            "Nombre": nombre or None,
+            "Valor": valor,
+            "Fecha": None,
+        }
+
     def _process_transferencia_italco(self, folder_path):
         registros = []
-
-        # La columna de cuenta (producto) sólo aparece en algunos soportes. Es
-        # opcional y, cuando existe, tiene 9+ dígitos; así no se confunde con la
-        # fecha (8 dígitos) ni con la factura (6 dígitos).
-        patron_soportes = re.compile(
-            r"""
-            (?P<nombre>(?:[0-9A-Z ]+?))\s+
-            (?P<nit>\d{6,})\s+
-            (?:(?P<producto>\d{9,})\s+)?
-            (?P<fecha>\d{8})\s+
-            (?P<factura>\d+)\s+
-            PAGO\s+NOMINA\s+BCA\s+
-            (?P<valor>[\d,.]+)
-            """,
-            re.VERBOSE | re.IGNORECASE,
-        )
+        total_lineas_pago = 0
 
         for filename in os.listdir(folder_path):
             if not filename.lower().endswith(".pdf"):
                 continue
 
             path = os.path.join(folder_path, filename)
+            filas_archivo = 0
 
             with pdfplumber.open(path) as pdf:
                 for page_num, page in enumerate(pdf.pages, start=1):
                     texto = page.extract_text() or ""
                     if not texto:
+                        self._log(f"[transfer][{filename}] página {page_num} sin texto extraíble (¿escaneo sin OCR?).")
                         continue
 
                     page_rows = []
-                    texto_plano = re.sub(r"\s+", " ", texto)
-
                     for linea in texto.split("\n"):
-                        # Clean line exactly as in the working notebook code
-                        linea_limpia = re.sub(r"(?<=\D)0(?=\D)", "", linea)
-                        linea_limpia = re.sub(r"\s+", " ", linea_limpia).strip()
-
-                        if not linea_limpia:
-                            continue
-
-                        m = patron_soportes.search(linea_limpia)
-                        if not m:
-                            continue
-
-                        data = m.groupdict()
-                        # Normalizar nombre sin zeros incrustados (limpiar_texto rule)
-                        nombre = re.sub(r"(?<=\D)0(?=\D)", "", data["nombre"]).lstrip("0").strip()
-                        nit = re.sub(r"[^\d]", "", data["nit"])
-                        producto = re.sub(r"[^\d]", "", data["producto"]) if data.get("producto") else None
-                        valor = self._limpiar_numero(data["valor"])
-                        fecha = None
-                        try:
-                            fecha = pd.to_datetime(data["fecha"], format="%Y%m%d", errors="coerce")
-                        except Exception:
-                            fecha = None
-
-                        page_rows.append(
-                            {
-                                "Cuenta": producto or None,
-                                "Tipo": "ITALCO",
-                                "Documento": nit,
-                                "Nombre": nombre,
-                                "Valor": valor,
-                                "Fecha": fecha,
-                            }
-                        )
+                        data = self._match_linea_transferencia(linea)
+                        if data:
+                            page_rows.append(data)
 
                     if page_rows:
                         registros.extend(page_rows)
+                        filas_archivo += len(page_rows)
+                        total_lineas_pago += len(page_rows)
                         continue
 
+                    # Fallback: soporte tipo desprendible (una persona por página),
+                    # con la cédula tras "CC:" y el neto tras "Total Neto:".
+                    texto_plano = re.sub(r"\s+", " ", texto)
                     cc_match = re.search(r"CC:\s*([\d.]+)", texto_plano, re.IGNORECASE)
                     neto_match = re.search(r"Total Neto:\s*([\d,\.]+)", texto_plano, re.IGNORECASE)
                     if cc_match and neto_match:
@@ -582,8 +639,18 @@ class PayrollReconciliationApp:
                                 "Fecha": None,
                             }
                         )
+                        filas_archivo += 1
+                        total_lineas_pago += 1
+                    else:
+                        self._log(
+                            f"[transfer][{filename}] página {page_num}: sin renglones de "
+                            f"nómina ni patrón de respaldo (CC/Total Neto)."
+                        )
+
+            self._log(f"[transfer][{filename}] {filas_archivo} valor(es) de transferencia extraído(s).")
 
         df = pd.DataFrame(registros)
+        self._log(f"[transfer] Total transferencias extraídas: {total_lineas_pago} en {len(df)} registros.")
 
         if not df.empty and "Valor" in df.columns:
             def _to_int(v):
@@ -1034,10 +1101,38 @@ class PayrollReconciliationApp:
         if df_desprendibles is None or df_desprendibles.empty:
             return pd.DataFrame(resultados)
 
+        def _clave_cuenta(valor):
+            """Clave de cuenta robusta: solo dígitos y sin ceros a la izquierda.
+
+            Permite cruzar la cuenta del desprendible contra el número de producto
+            del soporte aunque difieran en ceros de relleno o en formato.
+            """
+            if valor is None:
+                return ""
+            try:
+                if pd.isna(valor):
+                    return ""
+            except (TypeError, ValueError):
+                pass
+            return re.sub(r"\D", "", str(valor)).lstrip("0")
+
         df_desprendibles["Identificacion"] = self._limpiar_doc(df_desprendibles["Identificacion"])
 
-        if df_transferencia is not None and not df_transferencia.empty:
+        hay_transferencias = df_transferencia is not None and not df_transferencia.empty
+        if hay_transferencias:
             df_transferencia["Documento"] = self._limpiar_doc(df_transferencia["Documento"])
+            # Clave de cuenta normalizada para el cruce por producto/cuenta.
+            df_transferencia["_cuenta_key"] = (
+                df_transferencia["Cuenta"].map(_clave_cuenta)
+                if "Cuenta" in df_transferencia.columns
+                else ""
+            )
+            self._log(
+                f"[reconcile] {len(df_transferencia)} transferencias disponibles; "
+                f"{df_transferencia['Documento'].nunique()} documento(s) distinto(s)."
+            )
+        else:
+            self._log("[reconcile] No se recibieron transferencias para cruzar.")
 
         if df_seguridad is not None and not df_seguridad.empty:
             df_seguridad["cc"] = (
@@ -1052,16 +1147,22 @@ class PayrollReconciliationApp:
             sum_devs = _normalizar_numero(sum(devs)) if devs else None
 
             cta = grupo_despr["Cuenta"].iloc[0] if "Cuenta" in grupo_despr.columns else None
+            cta_key = _clave_cuenta(cta)
 
-            # Buscar transferencias coincidentes y comparar por suma
+            # Buscar transferencias coincidentes (por documento o por cuenta) y
+            # comparar por suma. El cruce por documento es el principal; el de
+            # cuenta es un respaldo para soportes donde el documento difiera.
             grupo_trans = pd.DataFrame()
             estado_trans = "Transferencia no encontrada"
             valores_trans = []
-            if df_transferencia is not None and not df_transferencia.empty:
-                grupo_trans = df_transferencia[
-                    (df_transferencia["Documento"] == doc) |
-                    (df_transferencia["Cuenta"] == cta)
-                ]
+            if hay_transferencias:
+                por_documento = df_transferencia["Documento"] == doc
+                por_cuenta = (
+                    (df_transferencia["_cuenta_key"] == cta_key) & (cta_key != "")
+                    if "_cuenta_key" in df_transferencia.columns
+                    else False
+                )
+                grupo_trans = df_transferencia[por_documento | por_cuenta]
 
             if not grupo_trans.empty:
                 valores_trans = _normalizar_lista(grupo_trans["Valor"].dropna().tolist())
@@ -1079,8 +1180,19 @@ class PayrollReconciliationApp:
                     estado_trans = "OK"
                 else:
                     estado_trans = "Valor no coincide"
+                    self._log(
+                        f"[reconcile] doc={doc}: transferencia encontrada pero la suma no "
+                        f"coincide (netos={suma_netos} vs transferencias={suma_trans})."
+                    )
             else:
                 valores_trans = None
+                if hay_transferencias:
+                    # Log diagnóstico: la transferencia existe en el universo pero no
+                    # cruzó por documento ni por cuenta para esta persona.
+                    self._log(
+                        f"[reconcile] doc={doc} (cuenta={cta_key or '—'}): sin transferencia "
+                        f"que cruce por documento ni por cuenta -> 'Transferencia no encontrada'."
+                    )
 
             # Obtener IBCs desde df_seguridad si está disponible
             ibc_vals = []

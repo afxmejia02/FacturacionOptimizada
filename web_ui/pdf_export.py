@@ -148,7 +148,7 @@ def build_results_pdf(titulo, archivos, secciones, source_labels=None):
     elementos = [Paragraph(titulo, styles["titulo"])]
     elementos.append(
         Paragraph(
-            "Generado: " + datetime.now().strftime("%Y-%m-%d %H:%M"), styles["meta"]
+            "Generado: " + datetime.now().strftime("%Y-%m-%d"), styles["meta"]
         )
     )
 

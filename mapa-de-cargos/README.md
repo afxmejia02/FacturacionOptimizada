@@ -27,12 +27,21 @@ reutiliza la web:
 - **ITALCO** – desprendibles tipo “Comprobante de pago de Nomina”: la cédula va
   tras `CC:`, el neto tras `Total Neto:` y el **devengado** tras `TOTAL INGRESOS`
   (sin `$`). Los soportes de transferencia son la “consulta de pagos a terceros”
-  del banco (líneas `… PAGO NOMINA BCA <valor>`). La seguridad social es la
-  “Planilla Resumen” de aportes en línea: el documento está en la columna 2 y el
-  IBC de pensión en la columna 26 (página 1) o 27 (páginas siguientes).
-  La columna de cuenta/producto del soporte es **opcional**: algunos soportes la
-  traen (9+ dígitos, entre el NIT y la fecha) y otros van directo del NIT a la
-  fecha. El parser detecta ambos casos.
+  del banco (líneas tipo `<nombre> <doc> [cuenta] [fecha] [factura] PAGO NOMINA
+  BCA <valor>`). La seguridad social es la “Planilla Resumen” de aportes en
+  línea: el documento está en la columna 2 y el IBC de pensión en la columna 26
+  (página 1) o 27 (páginas siguientes).
+
+  El renglón de transferencia se extrae de forma **robusta y genérica**
+  (`_match_linea_transferencia`), no por un layout fijo: detecta el documento
+  (primer grupo de 5-15 dígitos), el valor (último importe de la línea) y la
+  cuenta (primer grupo de 9+ dígitos, opcional). Tolera la **ausencia de la
+  columna de fecha**, distintos formatos monetarios, espacios y ruido de OCR, y
+  variantes de la etiqueta de destino (basta que aparezca “NÓMINA”). Si una
+  página no trae renglones, hay un *fallback* a soporte tipo desprendible
+  (`CC:` / `Total Neto:`). El cruce posterior es por documento o por cuenta
+  (normalizando ceros de relleno), con logs que explican cada “Transferencia no
+  encontrada”.
 
 > Importante: el formato de los desprendibles debe coincidir con el de las
 > transferencias / seguridad social. La web pasa el mismo `formato` a todos los
@@ -62,18 +71,31 @@ comparación) es:
 | OS | derivada de `Nombre Centro Costo` (`…Os050…`→50) | `No_de_orden_de_servicio_conocido_por_el_contratista` | número |
 | Nombres / Apellidos | `Nombres` / `Apellidos` | `Nombres` / `Apellidos` | texto |
 | Cargo | `Cargo` | `CargoContratoLaboral` | texto |
-| Fecha de Ingreso | `Fecha de Ingreso` | `Fecha_de_inicio_de_actividades_…` | fecha |
-| Fecha de retiro | `Fecha de retiro` | `Fecha_fin_de_actividades_…` | fecha |
+| Fecha Inicio | `Fecha Inicio` | `Fecha_de_inicio_de_actividades_…` | fecha |
+| Fecha Vencimiento | `Fecha Vencimiento` | `Fecha_fin_de_actividades_…` | fecha |
 | Días Trabajados | `Días Trabajados` | `DiasTrabajadosEnMes` | número |
+| Salario | `Salario Diario Contratado` | `SalarioDiarioPesos` | moneda |
+
+> **Fechas:** los campos de actividades de la ODS son la vigencia del
+> **contrato**, por eso se comparan contra `Fecha Inicio` / `Fecha Vencimiento`
+> del Informe, **no** contra `Fecha de Ingreso` / `Fecha de retiro` (vínculo
+> laboral, un concepto distinto que generaba falsos positivos).
+
+> **Salario:** se compara como `moneda` (valor numérico normalizado, tolerante a
+> `$`, separadores de miles/decimales y espacios) y se muestra en pesos
+> colombianos (`$120.000`). Cuando difiere, la celda lista ambos: **Informe** y
+> **Lista ODS**. Las utilidades `normalizar_moneda` / `formatear_cop` son
+> reutilizables.
 
 El Informe se lee de la hoja `Informe` con el encabezado real en la fila 10;
 como varias columnas con tildes llegan corruptas en el xlsx, las columnas usadas
 se referencian **por posición** y se renombran. El resultado es un DataFrame
 donde cada campo es una **lista**: `[valor]` si ambos coinciden,
-`[valor_informe, valor_ods]` si difieren; más una columna `Estado revisión`
-(`ok` o `valores no coinciden: <campos>`). La comparación normaliza por tipo
-(texto sin acentos, fecha por día, número entero), de modo que `2025-06-08
-00:00:00` y `2025-06-08` se consideran iguales.
+`[valor_informe, valor_ods]` si difieren. La comparación normaliza por tipo
+(texto sin acentos, fecha por día, número entero, moneda), de modo que
+`2025-06-08 00:00:00` y `2025-06-08` se consideran iguales. **No hay columna de
+estado/observaciones**: el resaltado por celda (listas de dos elementos) es el
+único indicador de inconsistencia.
 
 ## Uso
 
