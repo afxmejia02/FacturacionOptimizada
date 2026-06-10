@@ -10,11 +10,13 @@ Run locally with:  ``streamlit run app.py``
 """
 from __future__ import annotations
 
-import os
+import base64
+import json
 import traceback
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from excel_export import build_results_excel
 from pdf_export import build_results_pdf
@@ -56,136 +58,105 @@ def _reset_results() -> None:
         st.session_state[key] = value
 
 
-def _dialogo_guardar(nombre_sugerido, defaultextension, filetypes):
-    """Abre el diálogo nativo "Guardar como" del sistema operativo.
+# Plantilla del componente HTML que abre el diálogo nativo "Guardar como" del
+# navegador. Los marcadores /*...*/ se sustituyen en _boton_guardar.
+_PLANTILLA_GUARDAR = """
+<div style="font-family:'Source Sans Pro',sans-serif;">
+  <button id="b" style="width:100%;padding:0.45rem 0.75rem;border-radius:0.5rem;
+      border:1px solid rgba(49,51,63,0.2);background:#FFFFFF;color:#31333F;
+      cursor:pointer;font-size:0.95rem;line-height:1.4;">/*ETIQUETA*/</button>
+  <div id="m" style="font-size:0.8rem;margin-top:4px;color:#155724;"></div>
+</div>
+<script>
+(function(){
+  const b64="/*B64*/";
+  const nombre=/*NOMBRE*/, mime=/*MIME*/, ext=/*EXT*/;
+  const bytes=Uint8Array.from(atob(b64), function(c){return c.charCodeAt(0);});
+  const b=document.getElementById("b"), m=document.getElementById("m");
+  function descargaNormal(){
+    const a=document.createElement("a");
+    const url=URL.createObjectURL(new Blob([bytes],{type:mime}));
+    a.href=url; a.download=nombre; document.body.appendChild(a); a.click();
+    a.remove(); URL.revokeObjectURL(url);
+    m.style.color="#155724"; m.textContent="Descargado: "+nombre;
+  }
+  b.addEventListener("click", async function(){
+    m.textContent="";
+    if(window.showSaveFilePicker){
+      try{
+        const opts={suggestedName:nombre};
+        if(mime && ext){opts.types=[{description:nombre, accept:Object.fromEntries([[mime,[ext]]])}];}
+        const h=await window.showSaveFilePicker(opts);
+        const w=await h.createWritable();
+        await w.write(new Blob([bytes],{type:mime}));
+        await w.close();
+        m.style.color="#155724"; m.textContent="Guardado \\u2713";
+      }catch(e){
+        if(e && e.name==="AbortError"){ m.style.color="#888"; m.textContent="Cancelado"; }
+        else { descargaNormal(); }
+      }
+    } else { descargaNormal(); }
+  });
+})();
+</script>
+"""
 
-    El servidor de Streamlit corre en la máquina del usuario (localhost), así que
-    el diálogo de tkinter aparece en su pantalla y permite elegir ruta y nombre.
-    Se ejecuta en un **subproceso** (hilo principal limpio) porque crear tkinter
-    dentro del hilo de trabajo de Streamlit es inestable en Windows.
 
-    Devuelve la ruta elegida, ``""`` si el usuario cancela, o ``None`` si no hay
-    GUI nativa disponible (entorno headless) -> el llamador usa descarga por
-    navegador como respaldo.
+def _boton_guardar(datos: bytes, nombre_sugerido: str, mime: str, etiqueta: str) -> None:
+    """Botón que abre el diálogo nativo del navegador "Guardar como".
+
+    Usa la File System Access API (``showSaveFilePicker``) de Edge/Chrome: abre el
+    explorador del sistema para que el usuario elija **carpeta y nombre** antes de
+    escribir el archivo (no se descarga de inmediato). Si el navegador no soporta
+    la API (o la bloquea), cae a una descarga normal con el nombre sugerido.
+
+    Los bytes se incrustan en el componente (base64) porque el clic ocurre dentro
+    del iframe (gesto del usuario), no en un rerun de Python.
     """
-    import json
-    import subprocess
-    import sys
-
-    # Script hijo: abre el diálogo y escribe la ruta (UTF-8) en stdout.
-    script = (
-        "import sys, json\n"
-        "import tkinter as tk\n"
-        "from tkinter import filedialog\n"
-        "args = json.loads(sys.argv[1])\n"
-        "root = tk.Tk(); root.withdraw()\n"
-        "try:\n"
-        "    root.attributes('-topmost', True)\n"
-        "except Exception:\n"
-        "    pass\n"
-        "ruta = filedialog.asksaveasfilename(initialfile=args['nombre'],"
-        " defaultextension=args['ext'], filetypes=[tuple(ft) for ft in args['filetypes']])\n"
-        "sys.stdout.buffer.write((ruta or '').encode('utf-8'))\n"
+    b64 = base64.b64encode(datos).decode("ascii")
+    ext = "." + nombre_sugerido.rsplit(".", 1)[-1] if "." in nombre_sugerido else ""
+    html = (
+        _PLANTILLA_GUARDAR
+        .replace("/*ETIQUETA*/", etiqueta)
+        .replace("/*B64*/", b64)
+        .replace("/*NOMBRE*/", json.dumps(nombre_sugerido))
+        .replace("/*MIME*/", json.dumps(mime))
+        .replace("/*EXT*/", json.dumps(ext))
     )
-    payload = json.dumps(
-        {"nombre": nombre_sugerido, "ext": defaultextension, "filetypes": filetypes}
-    )
-    kwargs = {}
-    if os.name == "nt":
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    try:
-        res = subprocess.run(
-            [sys.executable, "-c", script, payload],
-            capture_output=True,
-            timeout=300,
-            **kwargs,
-        )
-    except Exception:
-        print("[ERROR][web_ui] El diálogo nativo de guardado falló")
-        traceback.print_exc()
-        return None
-
-    if res.returncode != 0:
-        # tkinter no disponible u otro error en el hijo -> respaldo por navegador.
-        if res.stderr:
-            print("[web_ui] diálogo (subproceso) stderr:", res.stderr.decode("utf-8", "ignore").strip())
-        return None
-    return res.stdout.decode("utf-8", "ignore").strip("\r\n")  # "" cuando se cancela
-
-
-def _guardar_con_dialogo(construir_bytes, nombre_sugerido, defaultextension, filetypes, key, etiqueta):
-    """Genera los bytes y los guarda en la ruta que el usuario elija.
-
-    Abre el diálogo nativo del sistema; si no está disponible (p. ej. en un
-    entorno sin GUI) deja preparada una descarga por navegador como respaldo.
-    """
-    try:
-        datos = construir_bytes()
-    except Exception as exc:
-        print(f"[ERROR][web_ui] Generación de {etiqueta} fallida")
-        traceback.print_exc()
-        st.error(f"No se pudo generar el {etiqueta}: {exc}")
-        return
-
-    ruta = _dialogo_guardar(nombre_sugerido, defaultextension, filetypes)
-    if ruta is None:
-        # Sin diálogo nativo: respaldo por descarga del navegador (persistente).
-        st.session_state[f"_pending_dl_{key}_{etiqueta}"] = (datos, nombre_sugerido)
-        return
-    if ruta == "":
-        st.info("Guardado cancelado.")
-        return
-    try:
-        with open(ruta, "wb") as fh:
-            fh.write(datos)
-        st.success(f"Guardado en: {ruta}")
-    except Exception as exc:
-        st.error(f"No se pudo guardar el archivo: {exc}")
+    components.html(html, height=72)
 
 
 def _render_export_buttons(key, default_name, titulo, archivos, secciones, source_labels=None) -> None:
     """Botones "Guardar como PDF" / "Guardar como Excel".
 
-    Al hacer clic se generan los bytes y se abre el diálogo nativo del sistema
-    para elegir ruta y nombre (no se descarga de inmediato).
+    Al hacer clic se abre el diálogo nativo del navegador para elegir carpeta y
+    nombre (no se descarga de inmediato con un nombre por defecto).
     """
-    st.markdown("**Exportar resultados**")
+    st.markdown("**Exportar resultados** — elige carpeta y nombre al guardar")
     col_pdf, col_xlsx = st.columns(2)
 
     with col_pdf:
-        if st.button("Guardar como PDF", key=f"btn_pdf_{key}"):
-            _guardar_con_dialogo(
-                lambda: build_results_pdf(titulo, archivos, secciones, source_labels=source_labels),
-                f"{default_name}.pdf",
-                ".pdf",
-                [("Archivo PDF", "*.pdf"), ("Todos los archivos", "*.*")],
-                key,
-                "PDF",
-            )
-    with col_xlsx:
-        if st.button("Guardar como Excel", key=f"btn_xlsx_{key}"):
-            _guardar_con_dialogo(
-                lambda: build_results_excel(titulo, archivos, secciones, source_labels=source_labels),
-                f"{default_name}.xlsx",
-                ".xlsx",
-                [("Libro de Excel", "*.xlsx"), ("Todos los archivos", "*.*")],
-                key,
-                "Excel",
-            )
+        try:
+            pdf_bytes = build_results_pdf(titulo, archivos, secciones, source_labels=source_labels)
+            _boton_guardar(pdf_bytes, f"{default_name}.pdf", "application/pdf", "Guardar como PDF")
+        except Exception as exc:
+            print("[ERROR][web_ui] Generación de PDF fallida")
+            traceback.print_exc()
+            st.error(f"No se pudo generar el PDF: {exc}")
 
-    # Respaldo: si el diálogo nativo no estaba disponible, ofrecer descarga.
-    for etiqueta, mime in (("PDF", "application/pdf"),
-                           ("Excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")):
-        pendiente = st.session_state.get(f"_pending_dl_{key}_{etiqueta}")
-        if pendiente:
-            datos, nombre = pendiente
-            st.download_button(
-                label=f"Descargar {etiqueta}",
-                data=datos,
-                file_name=nombre,
-                mime=mime,
-                key=f"dlbtn_{key}_{etiqueta}",
+    with col_xlsx:
+        try:
+            xlsx_bytes = build_results_excel(titulo, archivos, secciones, source_labels=source_labels)
+            _boton_guardar(
+                xlsx_bytes,
+                f"{default_name}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "Guardar como Excel",
             )
+        except Exception as exc:
+            print("[ERROR][web_ui] Generación de Excel fallida")
+            traceback.print_exc()
+            st.error(f"No se pudo generar el Excel: {exc}")
 
 
 
