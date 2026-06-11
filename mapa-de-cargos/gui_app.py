@@ -50,6 +50,11 @@ _RE_DOCUMENTO = re.compile(r"\b(\d{5,15})\b")
 # Cuenta / número de producto (opcional): grupo largo de 9+ dígitos.
 _RE_PRODUCTO = re.compile(r"\b(\d{9,})\b")
 
+# Número de factura: token (YYMMDD o YYYYMMDD) inmediatamente antes de "PAGO".
+# Es la referencia de la quincena del soporte (p. ej. 250415 -> 2025-04-15), no
+# la fecha real de consignación. Se usa para filtrar transferencias por periodo.
+_RE_FACTURA = re.compile(r"(\d{6,8})\s+PAG", re.IGNORECASE)
+
 
 class PayrollReconciliationApp:
     """
@@ -440,6 +445,13 @@ class PayrollReconciliationApp:
                     cuenta_match = re.search(r"CUENTA:\s*(\d+)", texto_plano, re.IGNORECASE)
                     # El devengado en ITALCO es el TOTAL INGRESOS (no el Total Neto).
                     dev_match = re.search(r"TOTAL INGRESOS\s*([\d,\.]+)", texto_plano, re.IGNORECASE)
+                    # Periodo de la quincena: "Periodo: 2025-04-01 al 2025-04-15".
+                    # Se usa para descartar transferencias de otras quincenas/meses.
+                    periodo_match = re.search(
+                        r"Periodo:?\s*(\d{4}-\d{1,2}-\d{1,2})\s*al\s*(\d{4}-\d{1,2}-\d{1,2})",
+                        texto_plano,
+                        re.IGNORECASE,
+                    )
 
                     if not (cc_match and neto_match):
                         continue
@@ -448,6 +460,14 @@ class PayrollReconciliationApp:
                     neto = self._limpiar_numero(neto_match.group(1))
                     devengado = self._limpiar_numero(dev_match.group(1)) if dev_match else None
                     cuenta = cuenta_match.group(1) if cuenta_match else None
+                    periodo_inicio = (
+                        pd.to_datetime(periodo_match.group(1), errors="coerce")
+                        if periodo_match else pd.NaT
+                    )
+                    periodo_fin = (
+                        pd.to_datetime(periodo_match.group(2), errors="coerce")
+                        if periodo_match else pd.NaT
+                    )
 
                     if not identificacion:
                         continue
@@ -457,6 +477,8 @@ class PayrollReconciliationApp:
                         "Neto": neto,
                         "Devengado": devengado,
                         "Cuenta": cuenta,
+                        "PeriodoInicio": periodo_inicio,
+                        "PeriodoFin": periodo_fin,
                     })
 
         df = pd.DataFrame(registros)
@@ -535,6 +557,41 @@ class PayrollReconciliationApp:
         texto = texto.replace(" ", " ")
         return re.sub(r"\s+", " ", texto).strip()
 
+    def _lineas_desde_palabras(self, page, x_tolerance=1.5, y_tolerance=3.0):
+        """Reconstruye las líneas de la página a partir de las palabras y sus
+        coordenadas (x, y), no de ``extract_text()``.
+
+        Es necesario porque en algunos soportes columnas contiguas (p. ej. la
+        columna "Productos" y el documento, o el documento y el número de
+        producto) quedan pegadas o entrelazadas en ``extract_text()``, lo que
+        rompe la lectura del documento. Agrupando por línea (``top``) y ordenando
+        por ``x0`` se recuperan los campos como tokens separados.
+
+        Si no hay palabras (página sin capa de texto), cae a ``extract_text()``.
+        """
+        try:
+            words = page.extract_words(x_tolerance=x_tolerance, use_text_flow=False)
+        except Exception:
+            words = []
+        if not words:
+            return (page.extract_text() or "").split("\n")
+
+        words = sorted(words, key=lambda w: (w["top"], w["x0"]))
+        lineas = []
+        actual = []
+        base_top = None
+        for w in words:
+            if base_top is not None and abs(w["top"] - base_top) > y_tolerance:
+                lineas.append(" ".join(c["text"] for c in sorted(actual, key=lambda c: c["x0"])))
+                actual = []
+                base_top = None
+            actual.append(w)
+            if base_top is None:
+                base_top = w["top"]
+        if actual:
+            lineas.append(" ".join(c["text"] for c in sorted(actual, key=lambda c: c["x0"])))
+        return lineas
+
     def _match_linea_transferencia(self, linea):
         """Extrae ``{Documento, Cuenta, Nombre, Valor}`` de una línea de soporte.
 
@@ -549,10 +606,13 @@ class PayrollReconciliationApp:
           "PAGO DE NOMINA", "PAGONOMINA"...): basta con que aparezca "NOMINA".
 
         Estrategia por proximidad de campos en el renglón:
-          ``<nombre> <documento> [<producto/fecha/factura> ...] <...NOMINA...> <valor>``
+          ``[productos] <nombre> <documento> [cuenta] [fechaPago] <factura> <...NOMINA...> <valor> [ods]``
           - documento = primer grupo de 5-15 dígitos (cédula/NIT del beneficiario);
-          - valor = último importe de la línea (la columna "Vr. Pago" va al final);
-          - cuenta = primer grupo largo (9+ dígitos) tras el documento (opcional).
+          - valor = primer importe DESPUÉS de la etiqueta de destino (evita tomar
+            la columna "ods"/consecutivo que algunos soportes ponen al final);
+          - cuenta = primer grupo largo (9+ dígitos) tras el documento (opcional);
+          - fecha = el número de factura (YYMMDD) justo antes de "PAGO", que indica
+            la quincena del soporte (se usa luego para filtrar por periodo).
 
         Devuelve ``None`` si la línea no parece un renglón de pago de nómina.
         """
@@ -561,7 +621,8 @@ class PayrollReconciliationApp:
             return None
 
         # 1) La línea debe parecer un pago de NÓMINA (señal tolerante a OCR).
-        if not _RE_NOMINA.search(plano):
+        m_nomina = _RE_NOMINA.search(plano)
+        if not m_nomina:
             return None
 
         # 2) Documento del beneficiario: primer grupo de 5-15 dígitos.
@@ -570,10 +631,18 @@ class PayrollReconciliationApp:
             return None
         documento = m_doc.group(1)
         nombre = plano[: m_doc.start()].strip(" -")
+        # Quitar un eventual número de "Productos" al inicio del renglón.
+        nombre = re.sub(r"^[\d\s]+", "", nombre).strip(" -") or None
 
-        # 3) Valor: último importe de la línea (la columna de valor va al final).
-        importes = _RE_IMPORTE.findall(plano)
-        valor = self._limpiar_numero(importes[-1]) if importes else None
+        # 3) Valor: primer importe DESPUÉS de la etiqueta de destino. Así no se
+        #    confunde con la columna "ods" (1-3 dígitos) al final del renglón.
+        importes_post = _RE_IMPORTE.findall(plano[m_nomina.end():])
+        if importes_post:
+            valor = self._limpiar_numero(importes_post[0])
+        else:
+            # Respaldo: último importe del renglón completo.
+            importes = _RE_IMPORTE.findall(plano)
+            valor = self._limpiar_numero(importes[-1]) if importes else None
         if valor is None:
             return None
 
@@ -582,13 +651,22 @@ class PayrollReconciliationApp:
         m_cta = _RE_PRODUCTO.search(cola)
         cuenta = m_cta.group(1) if m_cta else None
 
+        # 5) Fecha de la factura (referencia de la quincena): token antes de "PAGO".
+        fecha = None
+        m_fact = _RE_FACTURA.search(plano)
+        if m_fact:
+            factura = m_fact.group(1)
+            formato = "%Y%m%d" if len(factura) == 8 else "%y%m%d"
+            parsed = pd.to_datetime(factura, format=formato, errors="coerce")
+            fecha = None if pd.isna(parsed) else parsed
+
         return {
             "Cuenta": cuenta,
             "Tipo": "ITALCO",
             "Documento": documento,
-            "Nombre": nombre or None,
+            "Nombre": nombre,
             "Valor": valor,
-            "Fecha": None,
+            "Fecha": fecha,
         }
 
     def _process_transferencia_italco(self, folder_path):
@@ -609,8 +687,10 @@ class PayrollReconciliationApp:
                         self._log(f"[transfer][{filename}] página {page_num} sin texto extraíble (¿escaneo sin OCR?).")
                         continue
 
+                    # Reconstruir líneas por palabras/coordenadas: separa columnas
+                    # contiguas que extract_text() pega (p. ej. documento+producto).
                     page_rows = []
-                    for linea in texto.split("\n"):
+                    for linea in self._lineas_desde_palabras(page):
                         data = self._match_linea_transferencia(linea)
                         if data:
                             page_rows.append(data)
@@ -1149,6 +1229,16 @@ class PayrollReconciliationApp:
             cta = grupo_despr["Cuenta"].iloc[0] if "Cuenta" in grupo_despr.columns else None
             cta_key = _clave_cuenta(cta)
 
+            # Ventana de periodo de esta persona, tomada de SUS desprendibles
+            # ("Periodo: inicio al fin"). Sirve para descartar transferencias de
+            # otras quincenas/meses que comparten el mismo documento.
+            win_ini = win_fin = None
+            if "PeriodoInicio" in grupo_despr.columns and "PeriodoFin" in grupo_despr.columns:
+                inis = pd.to_datetime(grupo_despr["PeriodoInicio"], errors="coerce").dropna()
+                fins = pd.to_datetime(grupo_despr["PeriodoFin"], errors="coerce").dropna()
+                if not inis.empty and not fins.empty:
+                    win_ini, win_fin = inis.min(), fins.max()
+
             # Buscar transferencias coincidentes (por documento o por cuenta) y
             # comparar por suma. El cruce por documento es el principal; el de
             # cuenta es un respaldo para soportes donde el documento difiera.
@@ -1163,6 +1253,26 @@ class PayrollReconciliationApp:
                     else False
                 )
                 grupo_trans = df_transferencia[por_documento | por_cuenta]
+
+            # Filtrar por periodo: conservar solo transferencias cuya fecha de
+            # factura caiga dentro de la ventana de los desprendibles. Las que no
+            # tienen fecha legible se conservan (no se pueden clasificar) y se
+            # registra en el log. Evita sumar quincenas/meses ajenos al soporte.
+            if (
+                not grupo_trans.empty
+                and win_ini is not None
+                and win_fin is not None
+                and "Fecha" in grupo_trans.columns
+            ):
+                fechas = pd.to_datetime(grupo_trans["Fecha"], errors="coerce")
+                en_ventana = fechas.isna() | ((fechas >= win_ini) & (fechas <= win_fin))
+                descartadas = int((~en_ventana).sum())
+                if descartadas:
+                    self._log(
+                        f"[reconcile] doc={doc}: {descartadas} transferencia(s) fuera del "
+                        f"periodo [{win_ini.date()}..{win_fin.date()}] descartada(s)."
+                    )
+                grupo_trans = grupo_trans[en_ventana]
 
             if not grupo_trans.empty:
                 valores_trans = _normalizar_lista(grupo_trans["Valor"].dropna().tolist())

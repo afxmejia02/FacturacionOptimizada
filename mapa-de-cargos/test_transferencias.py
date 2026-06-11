@@ -71,6 +71,23 @@ class TestMatchLineaTransferencia(unittest.TestCase):
         self.assertEqual(data["Documento"], "80092626")
         self.assertEqual(data["Valor"], 403544.0)
 
+    def test_valor_ignora_columna_ods_final(self):
+        # Formato con columna "ods" al final: el valor NO es el último número.
+        linea = (
+            "00000000670833904 ORTEGON GOMEZ JIMMER EDUARDO 91513843 603168089 "
+            "20250505 250430 PAGO NOMINA BCA 3,457,617.00 40"
+        )
+        data = self.app._match_linea_transferencia(linea)
+        self.assertIsNotNone(data)
+        self.assertEqual(data["Documento"], "91513843")
+        self.assertEqual(data["Valor"], 3457617.0)  # no 40 (la columna ods)
+
+    def test_extrae_fecha_de_factura(self):
+        # La fecha = número de factura (YYMMDD) antes de "PAGO".
+        linea = "ORTEGON GOMEZ JIMMER EDUARDO 91513843 603168089 250415 PAGO NOMINA BCA 2,447,732.00"
+        data = self.app._match_linea_transferencia(linea)
+        self.assertEqual(data["Fecha"], pd.Timestamp("2025-04-15"))
+
     def test_lineas_que_no_son_pago_devuelven_none(self):
         for linea in (
             "BANCO DE OCCIDENTE",
@@ -120,6 +137,29 @@ class TestReconcileData(unittest.TestCase):
         ])
         df_t, _ = self.app._reconcile_data(despr, trans, None)
         self.assertEqual(df_t.iloc[0]["Estado"], "Transferencia no encontrada")
+
+    def test_filtra_transferencias_de_otras_quincenas(self):
+        # Caso real ORTEGON: desprendibles de abril (1Q + 2Q). Las transferencias
+        # incluyen marzo (250331) y mayo (250515), que NO deben sumarse.
+        despr = pd.DataFrame([
+            {"Identificacion": "91513843", "Neto": 2447732, "Devengado": None,
+             "Cuenta": "603168089", "PeriodoInicio": pd.Timestamp("2025-04-01"),
+             "PeriodoFin": pd.Timestamp("2025-04-15")},
+            {"Identificacion": "91513843", "Neto": 3457617, "Devengado": None,
+             "Cuenta": "603168089", "PeriodoInicio": pd.Timestamp("2025-04-01"),
+             "PeriodoFin": pd.Timestamp("2025-04-30")},
+        ])
+        trans = pd.DataFrame([
+            {"Documento": "91513843", "Cuenta": "603168089", "Valor": 3484422, "Fecha": pd.Timestamp("2025-03-31")},
+            {"Documento": "91513843", "Cuenta": "603168089", "Valor": 2447732, "Fecha": pd.Timestamp("2025-04-15")},
+            {"Documento": "91513843", "Cuenta": "603168089", "Valor": 3457617, "Fecha": pd.Timestamp("2025-04-30")},
+            {"Documento": "91513843", "Cuenta": "603168089", "Valor": 3008274, "Fecha": pd.Timestamp("2025-05-15")},
+        ])
+        df_t, _ = self.app._reconcile_data(despr, trans, None)
+        fila = df_t.iloc[0]
+        # Solo las dos de abril quedan; su suma coincide con los netos -> OK.
+        self.assertEqual(fila["Estado"], "OK")
+        self.assertEqual(sorted(fila["Valores_transferencia"]), [2447732, 3457617])
 
     def test_cruce_por_cuenta_con_ceros_de_relleno(self):
         # El documento difiere pero la cuenta coincide salvo ceros a la izquierda.

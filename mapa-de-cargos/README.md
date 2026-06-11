@@ -34,14 +34,28 @@ reutiliza la web:
 
   El renglón de transferencia se extrae de forma **robusta y genérica**
   (`_match_linea_transferencia`), no por un layout fijo: detecta el documento
-  (primer grupo de 5-15 dígitos), el valor (último importe de la línea) y la
-  cuenta (primer grupo de 9+ dígitos, opcional). Tolera la **ausencia de la
-  columna de fecha**, distintos formatos monetarios, espacios y ruido de OCR, y
-  variantes de la etiqueta de destino (basta que aparezca “NÓMINA”). Si una
+  (primer grupo de 5-15 dígitos), el valor (primer importe **después** de la
+  etiqueta de destino, para no confundirlo con la columna `ods`/consecutivo que
+  algunos soportes ponen al final), la cuenta (primer grupo de 9+ dígitos,
+  opcional) y la fecha de la **factura** (`YYMMDD` antes de `PAGO`, que indica la
+  quincena). Tolera la ausencia de columna de fecha de pago, distintos formatos
+  monetarios, espacios y ruido de OCR, y variantes de la etiqueta de destino
+  (basta que aparezca “NÓMINA”).
+
+  Las líneas se reconstruyen a partir de **palabras y coordenadas**
+  (`_lineas_desde_palabras`), no de `extract_text()`: algunos soportes traen una
+  columna “Productos” que se entrelaza con el nombre y pega el documento al
+  número de producto; reconstruir por `x` separa de nuevo los campos. Si una
   página no trae renglones, hay un *fallback* a soporte tipo desprendible
-  (`CC:` / `Total Neto:`). El cruce posterior es por documento o por cuenta
-  (normalizando ceros de relleno), con logs que explican cada “Transferencia no
-  encontrada”.
+  (`CC:` / `Total Neto:`).
+
+  El cruce es por documento o por cuenta (normalizando ceros de relleno) y,
+  además, **se filtra por periodo**: de cada desprendible se extrae
+  `Periodo: <inicio> al <fin>` y solo se conservan las transferencias cuya fecha
+  de factura cae dentro de esa ventana. Así no se suman quincenas/meses ajenos
+  (p. ej. una transferencia de marzo o mayo al conciliar abril). Hay logs que
+  explican cada “Transferencia no encontrada” y cada transferencia descartada
+  por periodo.
 
 > Importante: el formato de los desprendibles debe coincidir con el de las
 > transferencias / seguridad social. La web pasa el mismo `formato` a todos los
