@@ -363,16 +363,42 @@ class ServicesValidationApp:
             return None
 
     def _extraer_valor_etiqueta(self, tablas, etiquetas_objetivo):
-        etiquetas_norm = tuple(self._normalizar_busqueda(etiqueta).replace(" ", "") for etiqueta in etiquetas_objetivo)
+        """Devuelve el valor asociado a una etiqueta tipo ``EQUIPO:`` en las tablas.
+
+        La celda debe **ser** la etiqueta (igualdad, ignorando ``:`` final), no
+        solo contenerla: de lo contrario ``"equipo"`` coincidiría con la palabra
+        ``"EQUIPOS"`` dentro de un texto largo (p. ej. la descripción de la orden
+        de servicio), y se tomaría como valor la celda equivocada.
+
+        Soporta dos disposiciones:
+          - etiqueta y valor en celdas separadas (``EQUIPO:`` | ``CAMIÓN-GRÚA…``);
+          - etiqueta y valor en la misma celda (``EQUIPO: CAMIÓN-GRÚA…``).
+        """
+        # Etiquetas normalizadas (sin acentos, minúsculas, sin espacios ni ':').
+        etiquetas_norm = tuple(
+            self._normalizar_busqueda(etiqueta).replace(" ", "").rstrip(":")
+            for etiqueta in etiquetas_objetivo
+        )
 
         for tabla in tablas:
             for row in tabla:
                 for i, cell in enumerate(row):
                     cell_norm = self._normalizar_busqueda(cell).replace(" ", "")
-                    if any(etiqueta in cell_norm for etiqueta in etiquetas_norm):
+                    if not cell_norm:
+                        continue
+
+                    # (a) La celda ES exactamente la etiqueta: el valor está en la
+                    # siguiente celda no vacía de la fila.
+                    if cell_norm.rstrip(":") in etiquetas_norm:
                         for next_cell in row[i + 1 :]:
                             if next_cell and str(next_cell).strip():
                                 return self._normalizar_texto_equipo(next_cell)
+
+                    # (b) Etiqueta y valor en la misma celda ("EQUIPO: <valor>").
+                    if any(cell_norm.startswith(etiqueta + ":") for etiqueta in etiquetas_norm):
+                        partes = str(cell).split(":", 1)
+                        if len(partes) == 2 and partes[1].strip():
+                            return self._normalizar_texto_equipo(partes[1])
         return None
 
     def _extraer_fecha_reporte(self, page_text, tablas):
