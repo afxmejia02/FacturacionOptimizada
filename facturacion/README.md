@@ -22,6 +22,11 @@ que reutiliza la web:
   ser `perfiles`, `equipos`, `servicios` o `equipos_servicios` (alias:
   `"equipos y servicios"`, `"todos"`).
 - `_extraer_conteo_excel(path, fecha)` – conteos de la planilla para una fecha.
+  Si la columna `UNIDAD` de una tarifa dice **`MES`**, el valor viene como
+  fracción de mes (1 unidad/día = 1/30 ≈ 0.033); se convierte a unidad diaria
+  multiplicando por 30 (`DIAS_POR_MES`) y se **aproxima al entero más cercano**
+  (0.099 → 2.97 → 3), para que cruce con el conteo diario del PDF. Las tarifas en
+  `DÍA` no se alteran.
 - `_clave_equipo` – clave de emparejamiento robusta: pliega tildes/mayúsculas,
   descarta signos y conjunciones (y/o/e/u) y **elimina espacios**, de modo que
   `(10H)` y `(10 H)` cruzan igual.

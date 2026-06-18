@@ -518,6 +518,10 @@ class ServicesValidationApp:
     _ETIQUETAS_EQUIPO = ("equipo", "tipo de equipo", "tipo equipo")
     _ETIQUETAS_SERVICIO = ("servicio", "tipo de servicio", "servicios")
 
+    # Factor para convertir tarifas en "MES" a unidad diaria (1 unidad/día = 1/30
+    # de mes). Se multiplica el valor del histograma por este número.
+    DIAS_POR_MES = 30
+
     def _extraer_registros_etiqueta(self, tablas, etiquetas):
         """Registros ``[FECHA, TIPO DE EQUIPO, CANTIDAD]`` de una página cuyo
         'tipo' (equipo o servicio) está en una etiqueta tipo ``EQUIPO:`` /
@@ -715,12 +719,32 @@ class ServicesValidationApp:
         if not cols_fecha:
             raise ValueError("No date columns detected in Excel file.")
 
+        # Columna de unidad (UNIDAD): algunas tarifas se registran en "MES" en vez
+        # de por día. En esas filas el valor diario viene como fracción de mes
+        # (1 unidad/día = 1/30 ≈ 0.033), por eso se convierte a unidad diaria.
+        col_unidad = next(
+            (c for c in df_niveles.columns if self._normalizar_busqueda(c) == "unidad"),
+            None,
+        )
+
         cols_id = [col for col in df_niveles.columns if col not in cols_fecha]
         df_largo = df_niveles.melt(id_vars=cols_id, value_vars=cols_fecha, var_name="FECHA", value_name="VALOR")
         df_largo["FECHA"] = pd.to_datetime(df_largo["FECHA"], errors="coerce").dt.normalize()
 
         df_fecha = df_largo[df_largo["FECHA"] == fecha_reporte].copy()
         df_fecha = df_fecha[df_fecha["VALOR"].notna()]
+        df_fecha["VALOR"] = pd.to_numeric(df_fecha["VALOR"], errors="coerce")
+        df_fecha = df_fecha[df_fecha["VALOR"].notna()]
+
+        # Las filas en "MES" se pasan a unidad diaria (× 30) y se aproximan al
+        # entero más cercano: 0.099 → 2.97 → 3 (no se usa == exacto porque la
+        # conversión deja decimales como 0.99 / 1.98 / 2.97).
+        if col_unidad is not None:
+            es_mes = df_fecha[col_unidad].map(self._normalizar_busqueda) == "mes"
+            df_fecha.loc[es_mes, "VALOR"] = (
+                df_fecha.loc[es_mes, "VALOR"] * self.DIAS_POR_MES
+            ).round()
+
         # Clave robusta para que el emparejamiento tolere comillas/conjunciones.
         df_fecha["PERFIL_NORM"] = df_fecha["DESCRIPCION TARIFA"].apply(self._clave_equipo)
         df_fecha = df_fecha.groupby(["PERFIL_NORM"], as_index=False)["VALOR"].sum()

@@ -6,9 +6,13 @@ Regresión del bug: la palabra "EQUIPOS" dentro de un texto largo (la descripci�
 de la orden de servicio) hacía que se tomara la celda equivocada como valor del
 equipo (devolvía "EQUIPO:" en vez del nombre real).
 """
+import datetime as dt
 import importlib.util
 import os
+import tempfile
 import unittest
+
+import pandas as pd
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -86,6 +90,33 @@ class TestExtraccionUnificada(unittest.TestCase):
         self.assertEqual(len(registros), 1)
         self.assertEqual(registros[0]["TIPO DE EQUIPO"], "GAMMAGRAFÍAS (RADIOGRAFÍA CONVENCIONAL)")
         self.assertEqual(registros[0]["CANTIDAD"], 3.0)
+
+
+class TestConversionUnidadMes(unittest.TestCase):
+    """Tarifas en 'MES' se pasan a unidad diaria (× 30) y se aproximan al entero."""
+
+    def setUp(self):
+        self.app = _app()
+
+    def _hist_xlsx(self, fecha):
+        # Encabezado real con columna UNIDAD + una columna de fecha (datetime).
+        matriz = [
+            ["COD. TAR.", "DESCRIPCION TARIFA", "UNIDAD", "VLR. UND.", "CANTIDAD", "VLR. TOTAL", fecha],
+            ["1.1", "CAMPEROS O CAMIONETAS 4X2 (10 HORAS)", "MES", 1, 1, 1, 0.099],
+            ["1.2", "Nivel E11", "DÍA", 1, 1, 1, 11],
+        ]
+        path = os.path.join(tempfile.mkdtemp(), "hist.xlsx")
+        pd.DataFrame(matriz).to_excel(path, header=False, index=False)
+        return path
+
+    def test_mes_a_diaria_y_dia_sin_cambios(self):
+        fecha = dt.datetime(2026, 5, 25)
+        path = self._hist_xlsx(fecha)
+        d = self.app._extraer_conteo_excel(path, fecha)
+        # 0.099 × 30 = 2.97 -> 3
+        self.assertEqual(d[self.app._clave_equipo("CAMPEROS O CAMIONETAS 4X2 (10 HORAS)")], 3.0)
+        # Las tarifas en DÍA no se alteran.
+        self.assertEqual(d[self.app._clave_equipo("Nivel E11")], 11.0)
 
 
 if __name__ == "__main__":

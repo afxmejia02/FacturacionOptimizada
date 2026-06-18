@@ -104,9 +104,13 @@ comparación) es:
 > **Lista ODS**. Las utilidades `normalizar_moneda` / `formatear_cop` son
 > reutilizables.
 
-El Informe se lee de la hoja `Informe` con el encabezado real en la fila 10;
-como varias columnas con tildes llegan corruptas en el xlsx, las columnas usadas
-se referencian **por posición** y se renombran. El resultado es un DataFrame
+El Informe se lee de la hoja `Informe` con el encabezado real en la fila 10; las
+columnas usadas se localizan **por nombre** (normalizado: mayúsculas, sin acentos
+y espacios colapsados, con alias) en vez de por posición, porque el layout varía
+entre exportes mensuales (distinto número y orden de columnas). Si una columna
+requerida no existe en ese archivo (p. ej. el exporte de abril no trae
+`Días Trabajados` ni `Salario Diario Contratado`), el campo queda **vacío** en vez
+de tomar por error otra columna en esa posición. El resultado es un DataFrame
 donde cada campo es una **lista**: `[valor]` si ambos coinciden,
 `[valor_informe, valor_ods]` si difieren. La comparación normaliza por tipo
 (texto sin acentos, fecha por día, número entero, moneda), de modo que

@@ -36,7 +36,18 @@ def _informe_xlsx(filas):
     """
     n_cols = 18  # se usan posiciones hasta la 17 (Salario Diario Contratado)
     filler = [[None] * n_cols for _ in range(9)]          # filas 0-8 (títulos)
-    header = [f"c{i}" for i in range(n_cols)]             # fila 9 (encabezado)
+    # Encabezado real (fila 9). Las columnas se localizan por NOMBRE, no posición.
+    header = [f"c{i}" for i in range(n_cols)]
+    header[0] = "Valor pagado en nomina"
+    header[2] = "Identificación"
+    header[4] = "Nombres"
+    header[5] = "Apellidos"
+    header[6] = "Cargo"
+    header[7] = "Fecha Inicio"
+    header[8] = "Fecha Vencimiento"
+    header[10] = "Nombre Centro Costo"
+    header[16] = "Días Trabajados"
+    header[17] = "Salario Diario Contratado"
     datos = []
     for f in filas:
         fila = [None] * n_cols

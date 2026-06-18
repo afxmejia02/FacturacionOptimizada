@@ -22,9 +22,11 @@ no se emite una columna de estado/observaciones: el resaltado por celda es el
 Notas de formato del Informe:
 
 - el encabezado real está en la fila 10 (índice 9),
-- varias columnas con tildes llegan con el carácter corrupto en el xlsx
-  (p. ej. ``Identificación``, ``Días Trabajados``), por eso las columnas que se
-  usan se referencian **por posición** y se renombran a nombres limpios,
+- las columnas usadas se localizan **por nombre** (normalizado: mayúsculas, sin
+  acentos y espacios colapsados, con alias por si el nombre cambia), porque el
+  layout del Informe varía entre exportes mensuales (distinto número y orden de
+  columnas). Si una columna requerida no existe en ese archivo, el campo queda
+  **vacío** en vez de tomar por error otra columna en esa posición,
 - la orden de servicio no es una columna directa: se extrae del texto de
   ``Nombre Centro Costo`` (``…Os050…`` -> ``50``).
 
@@ -46,18 +48,21 @@ import pandas as pd
 INFORME_SHEET = "Informe"
 INFORME_HEADER_ROW = 9  # el encabezado real está en la fila 10 (índice 9)
 
-# Columnas del Informe usadas, por posición (los nombres del xlsx no son fiables).
-INFORME_COLS_POR_POSICION = {
-    0: "Tipo de pago",
-    2: "Identificacion",
-    4: "Nombres",
-    5: "Apellidos",
-    6: "Cargo",
-    7: "Fecha Inicio",                 # vigencia del contrato (inicio)
-    8: "Fecha Vencimiento",            # vigencia del contrato (fin)
-    10: "Nombre Centro Costo",
-    16: "Dias Trabajados",
-    17: "Salario Diario Contratado",   # salario diario pactado en el Informe
+# Columnas del Informe usadas, localizadas por NOMBRE (no por posición, que varía
+# entre exportes). Para cada nombre interno se listan los alias aceptados; se
+# comparan normalizados (mayúsculas/sin acentos/espacios colapsados), así que
+# basta con que coincida alguno. Si ninguno aparece, el campo queda ausente.
+INFORME_COLUMNAS = {
+    "Tipo de pago": ["Valor pagado en nomina", "Tipo de pago", "Tipo"],
+    "Identificacion": ["Identificacion", "Identificación", "Documento", "Cedula"],
+    "Nombres": ["Nombres"],
+    "Apellidos": ["Apellidos"],
+    "Cargo": ["Cargo"],
+    "Fecha Inicio": ["Fecha Inicio"],                # vigencia del contrato (inicio)
+    "Fecha Vencimiento": ["Fecha Vencimiento"],      # vigencia del contrato (fin)
+    "Nombre Centro Costo": ["Nombre Centro Costo"],
+    "Dias Trabajados": ["Dias Trabajados", "Días Trabajados"],
+    "Salario Diario Contratado": ["Salario Diario Contratado"],  # salario diario pactado
 }
 
 # (etiqueta visible, columna en el Informe, columna en la ODS, tipo de comparación).
@@ -259,16 +264,31 @@ def _comparable(valor, tipo) -> str:
 
 
 def leer_informe(source) -> pd.DataFrame:
-    """Lee la hoja 'Informe', renombra las columnas usadas y deriva la OS."""
+    """Lee la hoja 'Informe', localiza las columnas usadas por nombre y deriva la OS.
+
+    Las columnas se buscan por nombre normalizado (con alias), no por posición,
+    porque el layout varía entre exportes mensuales. Una columna que no aparezca
+    simplemente no se renombra y queda ausente del resultado.
+    """
     df = pd.read_excel(source, sheet_name=INFORME_SHEET, header=INFORME_HEADER_ROW)
-    rename = {
-        df.columns[idx]: nombre
-        for idx, nombre in INFORME_COLS_POR_POSICION.items()
-        if idx < len(df.columns)
-    }
+
+    # nombre_normalizado -> nombre real (primera aparición gana).
+    por_norm: dict[str, object] = {}
+    for col in df.columns:
+        por_norm.setdefault(norm_texto(col), col)
+
+    rename = {}
+    for destino, alias in INFORME_COLUMNAS.items():
+        for nombre in alias:
+            real = por_norm.get(norm_texto(nombre))
+            if real is not None:
+                rename[real] = destino
+                break
     df = df.rename(columns=rename)
-    # Solo interesan las filas de Recobro (no las de Nómina).
-    df = df[df["Tipo de pago"].map(norm_texto) == "RECOBRO"]
+
+    # Solo interesan las filas de Recobro (no las de Nómina), si la columna existe.
+    if "Tipo de pago" in df.columns:
+        df = df[df["Tipo de pago"].map(norm_texto) == "RECOBRO"]
     df["OS"] = df["Nombre Centro Costo"].map(extraer_os) if "Nombre Centro Costo" in df.columns else None
     return df
 
