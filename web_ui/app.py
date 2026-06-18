@@ -162,7 +162,10 @@ def _render_export_buttons(key, default_name, titulo, archivos, secciones, sourc
 
 
 def _render_pagos_form() -> None:
-    tipo = st.selectbox("Tipo de validación", ["equipos", "servicios", "perfiles"])
+    tipo = st.selectbox(
+        "Tipo de validación",
+        ["equipos", "servicios", "equipos y servicios", "perfiles"],
+    )
     pdf_file = st.file_uploader("Archivo PDF", type=["pdf"])
     excel_file = st.file_uploader("Archivo Excel", type=["xlsx", "xls"])
     submit = st.form_submit_button("Procesar")
@@ -317,15 +320,38 @@ def _render_pagos_results() -> None:
 
     st.subheader("Resultados por fecha")
     df_pagos = df_full
-    if "Fecha" in df_pagos.columns:
-        available_dates = sorted(df_pagos["Fecha"].dropna().astype(str).unique().tolist())
-        selected_date = st.selectbox(
-            "Filtrar por fecha",
-            ["Todas las fechas"] + available_dates,
-            key="pagos_date_filter",
-        )
-        if selected_date != "Todas las fechas":
-            df_pagos = df_pagos[df_pagos["Fecha"].astype(str) == selected_date].copy()
+
+    # Dos filtros independientes: por fecha y por tipo (servicio/equipo/perfil).
+    # Se pueden combinar (p. ej. un tipo en todas las fechas) o usar por separado.
+    col_fecha, col_tipo = st.columns(2)
+
+    with col_fecha:
+        if "Fecha" in df_pagos.columns:
+            available_dates = sorted(df_pagos["Fecha"].dropna().astype(str).unique().tolist())
+            selected_date = st.selectbox(
+                "Filtrar por fecha",
+                ["Todas las fechas"] + available_dates,
+                key="pagos_date_filter",
+            )
+            if selected_date != "Todas las fechas":
+                df_pagos = df_pagos[df_pagos["Fecha"].astype(str) == selected_date].copy()
+
+    # La columna de "tipo" se llama "Servicio" (equipos/servicios) o
+    # "Nivel/Perfil" (perfiles), según la validación.
+    columna_tipo = next(
+        (c for c in ("Servicio", "Nivel/Perfil") if c in df_pagos.columns), None
+    )
+    with col_tipo:
+        if columna_tipo:
+            tipos_disponibles = sorted(df_pagos[columna_tipo].dropna().astype(str).unique().tolist())
+            etiqueta = "tipo" if columna_tipo == "Servicio" else columna_tipo.lower()
+            selected_tipo = st.selectbox(
+                f"Filtrar por {etiqueta}",
+                ["Todos"] + tipos_disponibles,
+                key="pagos_tipo_filter",
+            )
+            if selected_tipo != "Todos":
+                df_pagos = df_pagos[df_pagos[columna_tipo].astype(str) == selected_tipo].copy()
 
     st.markdown(build_colored_table(df_pagos), unsafe_allow_html=True)
 

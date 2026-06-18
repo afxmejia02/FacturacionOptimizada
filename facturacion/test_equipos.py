@@ -62,5 +62,31 @@ class TestExtraerValorEtiqueta(unittest.TestCase):
         self.assertIsNone(self.app._extraer_valor_etiqueta([[row]], ETIQUETAS))
 
 
+class TestExtraccionUnificada(unittest.TestCase):
+    """Equipos y servicios comparten estructura; un solo extractor sirve a ambos."""
+
+    def setUp(self):
+        self.app = _app()
+
+    def test_reconoce_etiqueta_servicio(self):
+        row = ["", "SERVICIO:", "GAMMAGRAFÍAS (RADIOGRAFÍA CONVENCIONAL)", ""]
+        etiquetas = self.app._ETIQUETAS_EQUIPO + self.app._ETIQUETAS_SERVICIO
+        valor = self.app._extraer_valor_etiqueta([[row]], etiquetas)
+        self.assertEqual(valor, "GAMMAGRAFÍAS (RADIOGRAFÍA CONVENCIONAL)")
+
+    def test_extraer_registros_por_etiqueta(self):
+        # Etiqueta SERVICIO: + tabla de detalle con FECHA y CANTIDAD por fila.
+        tabla = [
+            ["", "SERVICIO:", "GAMMAGRAFÍAS (RADIOGRAFÍA CONVENCIONAL)"],
+            ["ITEM", "FECHA", "IDENTIFICACION", "CANTIDAD", "UBICACIÓN"],
+            ["1", "29 de mayo de 2026", "PTSC-001", "3", "GRB"],
+        ]
+        etiquetas = self.app._ETIQUETAS_EQUIPO + self.app._ETIQUETAS_SERVICIO
+        registros = self.app._extraer_registros_etiqueta([tabla], etiquetas)
+        self.assertEqual(len(registros), 1)
+        self.assertEqual(registros[0]["TIPO DE EQUIPO"], "GAMMAGRAFÍAS (RADIOGRAFÍA CONVENCIONAL)")
+        self.assertEqual(registros[0]["CANTIDAD"], 3.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

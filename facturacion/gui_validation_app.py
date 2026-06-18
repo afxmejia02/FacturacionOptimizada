@@ -234,21 +234,51 @@ class ServicesValidationApp:
         texto = re.sub(r"\s+", " ", texto)
         return texto.strip()
 
+    def _limpiar_nombre_equipo(self, texto):
+        """Limpia el nombre de un equipo extraído de una celda del PDF.
+
+        Algunos PDFs arrastran texto duplicado/superpuesto **después** del
+        nombre real (p. ej. ``"MOTOSOLDADOR ... (24 H) Motoso"``: el ``Motoso``
+        es un fragmento espurio de un texto que se superpone). Los nombres de
+        equipo en este formato terminan en un marcador de horas entre paréntesis
+        (``(10 H)``, ``(24 H)``, ``(10 HORAS)``); por eso, si hay un ``)`` y
+        sobra texto después del último, se descarta ese sobrante.
+
+        Si no hay paréntesis (p. ej. ``KIT DE EQUIPOS PARA RESCATISTAS``) se deja
+        el nombre tal cual.
+        """
+        limpio = self._normalizar_texto_equipo(texto)
+        if not isinstance(limpio, str):
+            return limpio
+        idx = limpio.rfind(")")
+        if idx != -1 and limpio[idx + 1:].strip():
+            limpio = limpio[: idx + 1].strip()
+        return limpio
+
     def _clave_equipo(self, texto):
         """Clave robusta para emparejar equipos/servicios entre PDF y Excel.
 
         Pliega acentos y mayúsculas, descarta comillas/paréntesis/comas y otros
-        signos, y elimina las conjunciones sueltas (y/o/e/u). Así
-        ``Camperos y camionetas ... (10 Horas)`` (PDF) empareja con
-        ``Camperos o camionetas ... (10 Horas)`` (Excel), pero sigue siendo
-        distinto de la variante ``(24 Horas)`` porque conserva los dígitos.
+        signos, elimina las conjunciones sueltas (y/o/e/u) y **descarta todos los
+        espacios**. Así:
+
+        - ``Camperos y camionetas ... (10 Horas)`` (PDF) empareja con
+          ``Camperos o camionetas ... (10 Horas)`` (Excel);
+        - ``... (10H)`` (PDF) empareja con ``... (10 H)`` (Excel): la diferencia
+          de espacios deja de importar;
+
+        pero sigue siendo distinto de la variante ``(24 Horas)`` porque conserva
+        los dígitos.
         """
         if texto is None:
             return ""
         plano = unicodedata.normalize("NFKD", str(texto)).encode("ascii", "ignore").decode().lower()
         plano = re.sub(r"[^a-z0-9]+", " ", plano)
+        # Quitar conjunciones sueltas (requiere espacios como límites de palabra)
+        # ANTES de eliminar los espacios.
         plano = re.sub(r"\b[yoeu]\b", " ", plano)
-        return re.sub(r"\s+", " ", plano).strip()
+        # Sin espacios: "(10 H)" y "(10H)" producen la misma clave.
+        return re.sub(r"\s+", "", plano)
 
     def _leer_excel_facturacion(self, path_hist):
         """Lee el Excel detectando la fila de encabezado real.
@@ -392,13 +422,13 @@ class ServicesValidationApp:
                     if cell_norm.rstrip(":") in etiquetas_norm:
                         for next_cell in row[i + 1 :]:
                             if next_cell and str(next_cell).strip():
-                                return self._normalizar_texto_equipo(next_cell)
+                                return self._limpiar_nombre_equipo(next_cell)
 
                     # (b) Etiqueta y valor en la misma celda ("EQUIPO: <valor>").
                     if any(cell_norm.startswith(etiqueta + ":") for etiqueta in etiquetas_norm):
                         partes = str(cell).split(":", 1)
                         if len(partes) == 2 and partes[1].strip():
-                            return self._normalizar_texto_equipo(partes[1])
+                            return self._limpiar_nombre_equipo(partes[1])
         return None
 
     def _extraer_fecha_reporte(self, page_text, tablas):
@@ -483,99 +513,116 @@ class ServicesValidationApp:
                                              
         return conteo, fecha_reporte
 
-    def _extraer_conteo_pdf_detallado(self, path_planilla, tipo_formato):
-        """Extrae registros de PDF de equipos o servicios según la estructura del formato."""
-        registros = []
-        tipo_formato = str(tipo_formato).lower()
+    # Etiquetas que identifican el "tipo" en el formato vigente (label + detalle
+    # por fila). Equipos y servicios comparten estructura: solo cambia la etiqueta.
+    _ETIQUETAS_EQUIPO = ("equipo", "tipo de equipo", "tipo equipo")
+    _ETIQUETAS_SERVICIO = ("servicio", "tipo de servicio", "servicios")
 
+    def _extraer_registros_etiqueta(self, tablas, etiquetas):
+        """Registros ``[FECHA, TIPO DE EQUIPO, CANTIDAD]`` de una página cuyo
+        'tipo' (equipo o servicio) está en una etiqueta tipo ``EQUIPO:`` /
+        ``SERVICIO:`` y cuyo detalle trae columnas FECHA y CANTIDAD por fila.
+
+        Equipos y servicios (formato vigente) comparten esta estructura; por eso
+        un mismo extractor sirve para ambos y para PDFs que mezclan los dos.
+        """
+        tipo_valor = self._extraer_valor_etiqueta(tablas, etiquetas)
+        if not tipo_valor:
+            return []
+
+        registros = []
+        for tabla in tablas:
+            if not tabla or len(tabla) < 3:
+                continue
+
+            header_idx = idx_fecha = idx_cantidad = None
+            for i, row in enumerate(tabla[:12]):
+                idx_fecha = self._buscar_indice_columna(row, ("fecha", "dia"))
+                idx_cantidad = self._buscar_indice_columna(row, ("cant", "cantidad"))
+                if idx_fecha is not None and idx_cantidad is not None:
+                    header_idx = i
+                    break
+            if header_idx is None:
+                continue
+
+            for row in tabla[header_idx + 1 :]:
+                if len(row) <= max(idx_fecha, idx_cantidad):
+                    continue
+                fecha = self._normalizar_fecha(row[idx_fecha])
+                cantidad = self._parsear_cantidad(row[idx_cantidad])
+                if not fecha or cantidad is None:
+                    continue
+                registros.append(
+                    {"FECHA": fecha, "TIPO DE EQUIPO": tipo_valor, "CANTIDAD": cantidad}
+                )
+        return registros
+
+    def _extraer_registros_servicios_legacy(self, page_text, tablas):
+        """Formato antiguo de servicios: una fecha de reporte por página y el
+        servicio en una columna del detalle (no en una etiqueta)."""
+        fecha_reporte = self._extraer_fecha_reporte(page_text, tablas)
+        if fecha_reporte is None:
+            return []
+
+        registros = []
+        for tabla in tablas:
+            if not tabla or len(tabla) < 3:
+                continue
+
+            header_idx = idx_tipo = idx_cantidad = None
+            for i, row in enumerate(tabla[:12]):
+                idx_tipo = self._buscar_indice_columna(row, ("tipo de equipo", "tipo equipo", "servicio"))
+                idx_cantidad = self._buscar_indice_columna(row, ("cant", "cantidad"))
+                if idx_tipo is not None and idx_cantidad is not None:
+                    header_idx = i
+                    break
+            if header_idx is None:
+                continue
+
+            for row in tabla[header_idx + 1 :]:
+                if len(row) <= max(idx_tipo, idx_cantidad):
+                    continue
+                tipo = self._normalizar_texto_equipo(row[idx_tipo])
+                cantidad = self._parsear_cantidad(row[idx_cantidad])
+                if not isinstance(tipo, str) or not tipo.strip() or cantidad is None:
+                    continue
+                registros.append(
+                    {"FECHA": fecha_reporte, "TIPO DE EQUIPO": tipo, "CANTIDAD": cantidad}
+                )
+        return registros
+
+    def _extraer_conteo_pdf_detallado(self, path_planilla, tipo_formato):
+        """Extrae registros de un PDF de equipos y/o servicios.
+
+        - ``equipos`` / ``servicios``: reconoce su etiqueta (``EQUIPO:`` /
+          ``SERVICIO:``) con el detalle por fila.
+        - ``equipos_servicios``: reconoce AMBAS, de modo que un solo PDF que
+          mezcle páginas de equipos y de servicios se procesa de una vez.
+
+        Para servicios y el modo combinado hay un *fallback* al formato antiguo
+        (fecha de reporte + columna de servicio) cuando una página no trae la
+        etiqueta.
+        """
+        # Normalizar alias: "equipos y servicios" / "todos" -> "equipos_servicios".
+        clave = str(tipo_formato).lower().strip().replace(" y ", "_").replace(" ", "_")
+
+        if clave == "equipos":
+            etiquetas, usar_legacy = self._ETIQUETAS_EQUIPO, False
+        elif clave == "servicios":
+            etiquetas, usar_legacy = self._ETIQUETAS_SERVICIO, True
+        elif clave in ("equipos_servicios", "todos"):
+            etiquetas, usar_legacy = self._ETIQUETAS_EQUIPO + self._ETIQUETAS_SERVICIO, True
+        else:
+            raise ValueError(f"Unknown extraction type: {tipo_formato}")
+
+        registros = []
         with pdfplumber.open(path_planilla) as pdf:
             for page in pdf.pages:
-                page_text = page.extract_text() or ""
                 tablas = page.extract_tables() or []
-
-                if tipo_formato == "equipos":
-                    tipo_equipo = self._extraer_valor_etiqueta(tablas, ("equipo", "tipo de equipo", "tipo equipo"))
-                    if not tipo_equipo:
-                        continue
-
-                    for tabla in tablas:
-                        if not tabla or len(tabla) < 3:
-                            continue
-
-                        header_idx = None
-                        idx_fecha = None
-                        idx_cantidad = None
-
-                        for i, row in enumerate(tabla[:12]):
-                            idx_fecha = self._buscar_indice_columna(row, ("fecha", "dia"))
-                            idx_cantidad = self._buscar_indice_columna(row, ("cant", "cantidad"))
-                            if idx_fecha is not None and idx_cantidad is not None:
-                                header_idx = i
-                                break
-
-                        if header_idx is None:
-                            continue
-
-                        for row in tabla[header_idx + 1 :]:
-                            if len(row) <= max(idx_fecha, idx_cantidad):
-                                continue
-
-                            fecha = self._normalizar_fecha(row[idx_fecha])
-                            cantidad = self._parsear_cantidad(row[idx_cantidad])
-                            if not fecha or cantidad is None:
-                                continue
-
-                            registros.append(
-                                {
-                                    "FECHA": fecha,
-                                    "TIPO DE EQUIPO": tipo_equipo,
-                                    "CANTIDAD": cantidad,
-                                }
-                            )
-                    continue
-
-                if tipo_formato == "servicios":
-                    fecha_reporte = self._extraer_fecha_reporte(page_text, tablas)
-                    if fecha_reporte is None:
-                        continue
-
-                    for tabla in tablas:
-                        if not tabla or len(tabla) < 3:
-                            continue
-
-                        header_idx = None
-                        idx_tipo = None
-                        idx_cantidad = None
-
-                        for i, row in enumerate(tabla[:12]):
-                            idx_tipo = self._buscar_indice_columna(row, ("tipo de equipo", "tipo equipo", "servicio"))
-                            idx_cantidad = self._buscar_indice_columna(row, ("cant", "cantidad"))
-                            if idx_tipo is not None and idx_cantidad is not None:
-                                header_idx = i
-                                break
-
-                        if header_idx is None:
-                            continue
-
-                        for row in tabla[header_idx + 1 :]:
-                            if len(row) <= max(idx_tipo, idx_cantidad):
-                                continue
-
-                            tipo = self._normalizar_texto_equipo(row[idx_tipo])
-                            cantidad = self._parsear_cantidad(row[idx_cantidad])
-                            if not isinstance(tipo, str) or not tipo.strip() or cantidad is None:
-                                continue
-
-                            registros.append(
-                                {
-                                    "FECHA": fecha_reporte,
-                                    "TIPO DE EQUIPO": tipo,
-                                    "CANTIDAD": cantidad,
-                                }
-                            )
-                    continue
-
-                raise ValueError(f"Unknown extraction type: {tipo_formato}")
+                regs = self._extraer_registros_etiqueta(tablas, etiquetas)
+                if not regs and usar_legacy:
+                    regs = self._extraer_registros_servicios_legacy(page.extract_text() or "", tablas)
+                registros.extend(regs)
 
         df = pd.DataFrame(registros)
         if df.empty:
@@ -589,13 +636,19 @@ class ServicesValidationApp:
     def _extraer_servicios_pdf(self, path_planilla):
         return self._extraer_conteo_pdf_detallado(path_planilla, "servicios")
 
+    def _extraer_equipos_servicios_pdf(self, path_planilla):
+        return self._extraer_conteo_pdf_detallado(path_planilla, "equipos_servicios")
+
     def _extraer_conteo_pdf(self, path_planilla, tipo_extraccion="equipos"):
-        if tipo_extraccion.lower() == "perfiles":
+        clave = str(tipo_extraccion).lower().strip().replace(" y ", "_").replace(" ", "_")
+        if clave == "perfiles":
             return self._extraer_perfiles_pdf(path_planilla)
-        if tipo_extraccion.lower() == "equipos":
+        if clave == "equipos":
             return self._extraer_equipos_pdf(path_planilla)
-        if tipo_extraccion.lower() == "servicios":
+        if clave == "servicios":
             return self._extraer_servicios_pdf(path_planilla)
+        if clave in ("equipos_servicios", "todos"):
+            return self._extraer_equipos_servicios_pdf(path_planilla)
         raise ValueError(f"Unknown extraction type: {tipo_extraccion}")
 
     def _extraer_conteo_excel_perfiles(self, path_hist, fecha_reporte):
