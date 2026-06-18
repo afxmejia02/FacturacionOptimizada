@@ -169,7 +169,9 @@ def _render_pagos_form() -> None:
     pdf_files = st.file_uploader(
         "Archivos PDF", type=["pdf"], accept_multiple_files=True
     )
-    excel_file = st.file_uploader("Archivo Excel", type=["xlsx", "xls"])
+    excel_files = st.file_uploader(
+        "Archivos Excel", type=["xlsx", "xls"], accept_multiple_files=True
+    )
     submit = st.form_submit_button("Procesar")
 
     if not submit:
@@ -178,13 +180,13 @@ def _render_pagos_form() -> None:
     if not pdf_files:
         st.error("Por favor sube al menos un archivo PDF.")
         return
-    if not excel_file:
-        st.error("Por favor sube un archivo Excel.")
+    if not excel_files:
+        st.error("Por favor sube al menos un archivo Excel.")
         return
 
     try:
         with st.spinner("Procesando archivos..."):
-            df_display, message = process_pagos(pdf_files, excel_file, tipo)
+            df_display, message = process_pagos(pdf_files, excel_files, tipo)
         if message:
             st.info(message)
             st.session_state.pagos_result_df = None
@@ -195,7 +197,7 @@ def _render_pagos_form() -> None:
             st.session_state.pagos_result_tipo = tipo
             st.session_state.pagos_files = {
                 "PDF": ", ".join(f.name for f in pdf_files),
-                "Excel": excel_file.name,
+                "Excel": ", ".join(f.name for f in excel_files),
             }
     except Exception as exc:
         print("[ERROR][web_ui] Procesamiento fallido en pagos")
@@ -278,26 +280,32 @@ def _render_mano_obra_form() -> None:
         "Cruza el **Informe de Costo** contra el registro de la **ODS** por número "
         "de documento. Resalta solo la celda del campo que no coincide."
     )
-    informe_file = st.file_uploader(
-        "Excel Informe de Costo", type=["xlsx", "xls"], key="mano_obra_informe"
+    informe_files = st.file_uploader(
+        "Excel Informe de Costo",
+        type=["xlsx", "xls"],
+        key="mano_obra_informe",
+        accept_multiple_files=True,
     )
-    ods_file = st.file_uploader(
-        "Excel ODS (empleados)", type=["xlsx", "xls"], key="mano_obra_ods"
+    ods_files = st.file_uploader(
+        "Excel ODS (empleados)",
+        type=["xlsx", "xls"],
+        key="mano_obra_ods",
+        accept_multiple_files=True,
     )
     submit = st.form_submit_button("Procesar")
     if not submit:
         return
 
-    if not informe_file:
-        st.error("Por favor sube el Excel del Informe de Costo.")
+    if not informe_files:
+        st.error("Por favor sube al menos un Excel del Informe de Costo.")
         return
-    if not ods_file:
-        st.error("Por favor sube el Excel de la ODS.")
+    if not ods_files:
+        st.error("Por favor sube al menos un Excel de la ODS.")
         return
 
     try:
         with st.spinner("Comparando mano de obra..."):
-            table_html, message, df_result = process_mano_obra(informe_file, ods_file)
+            table_html, message, df_result = process_mano_obra(informe_files, ods_files)
         if message:
             st.info(message)
             st.session_state.mano_obra_df = None
@@ -307,8 +315,8 @@ def _render_mano_obra_form() -> None:
             st.session_state.mano_obra_df = df_result
             st.session_state.mano_obra_html = table_html
             st.session_state.mano_obra_files = {
-                "Informe de Costo": informe_file.name,
-                "ODS": ods_file.name,
+                "Informe de Costo": ", ".join(f.name for f in informe_files),
+                "ODS": ", ".join(f.name for f in ods_files),
             }
     except Exception as exc:
         print("[ERROR][web_ui] Procesamiento de mano de obra fallido")

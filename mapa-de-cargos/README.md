@@ -75,7 +75,10 @@ el **devengado** y lo compara contra los **IBC** reportados en la planilla:
 
 `mano_obra.py` define **`comparar_mano_obra(informe, ods)`**, que cruza el
 **Informe de Costo** (nómina) contra el registro de la **ODS** (empleados del
-contrato) por número de documento. Ambos Excel traen la misma información bajo
+contrato) por número de documento. Cada parámetro acepta una ruta/buffer o una
+**lista** de varios Excel por lado: cada archivo se lee por separado
+(`_leer_y_concatenar`) y se concatena antes de cruzar, de modo que una persona
+de cualquier Informe puede emparejarse con cualquier ODS. Ambos Excel traen la misma información bajo
 nombres de columna distintos. El mapeo (`MAPEO_COLUMNAS`, con tipo de
 comparación) es:
 
@@ -117,8 +120,8 @@ A través de la interfaz Streamlit (ver el [README raíz](../README.md)):
 herramientas **“Mapa de cargos - transferencias”**,
 **“Mapa de cargos - seguridad social”** y **“Mapa de cargos - mano de obra”**.
 En transferencias se elige el formato (TABARCA / ITALCO). En mano de obra se
-suben los dos Excel (Informe y ODS) y se resalta **solo la celda** del campo
-inconsistente, no toda la fila. Todos los resultados se descargan como Excel.
+suben uno o varios Excel por lado (Informe y ODS) y se resalta **solo la celda**
+del campo inconsistente, no toda la fila. Todos los resultados se descargan como Excel.
 
 ## Archivos
 

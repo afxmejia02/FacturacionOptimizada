@@ -278,14 +278,30 @@ def leer_ods(source) -> pd.DataFrame:
     return pd.read_excel(source)
 
 
+def _leer_y_concatenar(sources, lector) -> pd.DataFrame:
+    """Lee una o varias fuentes (ruta/buffer) con ``lector`` y las concatena.
+
+    Permite pasar más de un Excel por lado: cada archivo se lee por separado y
+    el resultado se une en un único DataFrame antes del cruce.
+    """
+    if not isinstance(sources, (list, tuple)):
+        sources = [sources]
+    partes = [lector(src) for src in sources]
+    if not partes:
+        return pd.DataFrame()
+    return pd.concat(partes, ignore_index=True)
+
+
 def comparar_mano_obra(informe_source, ods_source, mapeo=MAPEO_COLUMNAS) -> pd.DataFrame:
     """Cruza el Informe contra la ODS y devuelve el DataFrame de validación.
 
-    ``informe_source`` / ``ods_source`` pueden ser rutas o buffers (lo que acepte
-    ``pandas.read_excel``).
+    ``informe_source`` / ``ods_source`` pueden ser una ruta/buffer (lo que acepte
+    ``pandas.read_excel``) o una **lista** de varias fuentes; en ese caso cada
+    archivo se lee por separado y se concatena antes de cruzar, de modo que una
+    persona de cualquier Informe puede emparejarse con cualquier ODS.
     """
-    inf = leer_informe(informe_source)
-    ods = leer_ods(ods_source)
+    inf = _leer_y_concatenar(informe_source, leer_informe)
+    ods = _leer_y_concatenar(ods_source, leer_ods)
 
     inf["_doc"] = inf["Identificacion"].map(solo_digitos)
     ods["_doc"] = ods[COL_DOC_ODS].map(solo_digitos)

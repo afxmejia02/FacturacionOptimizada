@@ -195,24 +195,29 @@ def _extract_excel_perfiles_by_date(excel_path: str) -> pd.DataFrame:
     return df_largo.rename(columns={"VALOR": "Excel"})
 
 
-def build_perfiles_table(pdf_sources, excel_source) -> pd.DataFrame:
+def build_perfiles_table(pdf_sources, excel_sources) -> pd.DataFrame:
     """Cross PDF profile counts against the Excel history, grouped by date.
 
-    ``pdf_sources`` puede ser un único PDF o una lista; los conteos de todos se
-    acumulan antes de cruzar contra el Excel.
+    ``pdf_sources`` / ``excel_sources`` pueden ser un único archivo o una lista;
+    los conteos de todos los PDFs y la planilla de todos los Excel se acumulan
+    antes de cruzar.
     """
     if not isinstance(pdf_sources, (list, tuple)):
         pdf_sources = [pdf_sources]
+    if not isinstance(excel_sources, (list, tuple)):
+        excel_sources = [excel_sources]
 
     empty = pd.DataFrame(columns=["Fecha", "Nivel/Perfil", "PDF", "Excel", "Estado"])
     with tempfile.TemporaryDirectory(prefix="web_ui_perfiles_table_") as tmp_dir:
-        excel_path = os.path.join(tmp_dir, "upload.xlsx")
-
-        if hasattr(excel_source, "getbuffer"):
-            with open(excel_path, "wb") as excel_handle:
-                excel_handle.write(excel_source.getbuffer())
-        else:
-            excel_path = str(excel_source)
+        excel_paths = []
+        for idx, excel_source in enumerate(excel_sources):
+            if hasattr(excel_source, "getbuffer"):
+                excel_path = os.path.join(tmp_dir, f"upload_{idx}.xlsx")
+                with open(excel_path, "wb") as excel_handle:
+                    excel_handle.write(excel_source.getbuffer())
+            else:
+                excel_path = str(excel_source)
+            excel_paths.append(excel_path)
 
         partes_pdf = []
         for idx, pdf_source in enumerate(pdf_sources):
@@ -226,14 +231,18 @@ def build_perfiles_table(pdf_sources, excel_source) -> pd.DataFrame:
             if not df_parte.empty:
                 partes_pdf.append(df_parte)
 
-        df_excel = _extract_excel_perfiles_by_date(excel_path)
+        partes_excel = [_extract_excel_perfiles_by_date(p) for p in excel_paths]
+        partes_excel = [df for df in partes_excel if not df.empty]
 
-        if not partes_pdf or df_excel.empty:
+        if not partes_pdf or not partes_excel:
             return empty
 
         df_pdf = pd.concat(partes_pdf, ignore_index=True).groupby(
             ["FECHA", "PERFIL_NORM", "Nivel/Perfil"], as_index=False
         )["PDF"].sum()
+        df_excel = pd.concat(partes_excel, ignore_index=True).groupby(
+            ["FECHA", "PERFIL_NORM", "Nivel/Perfil"], as_index=False
+        )["Excel"].sum()
 
         df_merge = df_pdf.merge(
             df_excel, on=["FECHA", "PERFIL_NORM", "Nivel/Perfil"], how="outer"
@@ -258,11 +267,12 @@ def build_perfiles_table(pdf_sources, excel_source) -> pd.DataFrame:
 # Pagos (equipos / servicios / perfiles)
 # ---------------------------------------------------------------------------
 
-def process_pagos(pdf_files, excel_file, tipo):
+def process_pagos(pdf_files, excel_files, tipo):
     """Compare PDF counts against the Excel history for equipos/servicios/perfiles.
 
-    ``pdf_files`` puede ser un único archivo o una lista de varios PDFs; los
-    conteos de todos ellos se acumulan antes de cruzar contra el Excel.
+    ``pdf_files`` / ``excel_files`` pueden ser un único archivo o una lista de
+    varios; los conteos de todos los PDFs se acumulan, y la planilla histórica se
+    arma sumando todos los Excel, antes de cruzar.
 
     Returns ``(df_display, message)``: a results DataFrame (with a ``Fecha`` and
     ``Estado`` column, ready for the date filter + coloured table) or, when there
@@ -270,18 +280,23 @@ def process_pagos(pdf_files, excel_file, tipo):
     """
     if not isinstance(pdf_files, (list, tuple)):
         pdf_files = [pdf_files]
+    if not isinstance(excel_files, (list, tuple)):
+        excel_files = [excel_files]
 
     _debug_print(
         f"Inicio process_pagos. tipo={tipo}, "
         f"pdfs={[getattr(f, 'name', 'N/A') for f in pdf_files]}, "
-        f"excel={getattr(excel_file, 'name', 'N/A')}"
+        f"excels={[getattr(f, 'name', 'N/A') for f in excel_files]}"
     )
     validator_obj = _new_validator()
 
     with tempfile.TemporaryDirectory(prefix="web_ui_") as tmp_dir:
-        excel_path = os.path.join(tmp_dir, "upload.xlsx")
-        with open(excel_path, "wb") as excel_handle:
-            excel_handle.write(excel_file.getbuffer())
+        excel_paths = []
+        for idx, excel_file in enumerate(excel_files):
+            excel_path = os.path.join(tmp_dir, f"upload_{idx}.xlsx")
+            with open(excel_path, "wb") as excel_handle:
+                excel_handle.write(excel_file.getbuffer())
+            excel_paths.append(excel_path)
 
         pdf_paths = []
         for idx, pdf_file in enumerate(pdf_files):
@@ -293,7 +308,7 @@ def process_pagos(pdf_files, excel_file, tipo):
         rows = []
 
         if tipo == "perfiles":
-            df_display = build_perfiles_table(pdf_paths, excel_path)
+            df_display = build_perfiles_table(pdf_paths, excel_paths)
             _debug_print(f"Tabla perfiles construida. filas={len(df_display)}")
             if df_display.empty:
                 return None, "No se encontraron perfiles en el PDF o no fue posible cruzarlos por fecha."
@@ -311,7 +326,12 @@ def process_pagos(pdf_files, excel_file, tipo):
             pdf_agg = df_pdf.groupby(["FECHA", "TIPO DE EQUIPO"], as_index=False)["CANTIDAD"].sum()
 
             for fecha in sorted(pdf_agg["FECHA"].dropna().unique()):
-                conteo_excel = validator_obj._extraer_conteo_excel(excel_path, fecha)
+                # La planilla histórica puede venir en varios Excel: se suman los
+                # conteos de todos para esa fecha.
+                conteo_excel = {}
+                for excel_path in excel_paths:
+                    for clave, valor in validator_obj._extraer_conteo_excel(excel_path, fecha).items():
+                        conteo_excel[clave] = conteo_excel.get(clave, 0) + valor
                 pdf_fecha = pdf_agg[pdf_agg["FECHA"] == fecha]
                 all_servicios = sorted(
                     pdf_fecha["TIPO DE EQUIPO"].dropna().astype(str).unique().tolist()
@@ -431,8 +451,12 @@ def process_reconciliation(despr_files, trans_files, seguridad_files, recon_mode
 # Mano de obra (mapa de cargos: Informe de Costo vs registro de la ODS)
 # ---------------------------------------------------------------------------
 
-def process_mano_obra(informe_file, ods_file):
+def process_mano_obra(informe_files, ods_files):
     """Cross the Informe de Costo against the ODS registry, per worker.
+
+    ``informe_files`` / ``ods_files`` pueden ser un único archivo o una lista de
+    varios Excel por lado; cada uno se lee por separado y se concatena antes de
+    cruzar.
 
     Returns ``(table_html, message, df_result)`` where ``df_result`` keeps the
     list-valued comparison cells (one element = match, two = mismatch) so the
@@ -440,15 +464,27 @@ def process_mano_obra(informe_file, ods_file):
     """
     mano_obra = load_mano_obra_module()
 
-    with tempfile.TemporaryDirectory(prefix="web_ui_mano_obra_") as tmp_dir:
-        informe_path = os.path.join(tmp_dir, "informe.xlsx")
-        ods_path = os.path.join(tmp_dir, "ods.xlsx")
-        with open(informe_path, "wb") as handle:
-            handle.write(informe_file.getbuffer())
-        with open(ods_path, "wb") as handle:
-            handle.write(ods_file.getbuffer())
+    if not isinstance(informe_files, (list, tuple)):
+        informe_files = [informe_files]
+    if not isinstance(ods_files, (list, tuple)):
+        ods_files = [ods_files]
 
-        df_result = mano_obra.comparar_mano_obra(informe_path, ods_path)
+    with tempfile.TemporaryDirectory(prefix="web_ui_mano_obra_") as tmp_dir:
+        informe_paths = []
+        for idx, informe_file in enumerate(informe_files):
+            informe_path = os.path.join(tmp_dir, f"informe_{idx}.xlsx")
+            with open(informe_path, "wb") as handle:
+                handle.write(informe_file.getbuffer())
+            informe_paths.append(informe_path)
+
+        ods_paths = []
+        for idx, ods_file in enumerate(ods_files):
+            ods_path = os.path.join(tmp_dir, f"ods_{idx}.xlsx")
+            with open(ods_path, "wb") as handle:
+                handle.write(ods_file.getbuffer())
+            ods_paths.append(ods_path)
+
+        df_result = mano_obra.comparar_mano_obra(informe_paths, ods_paths)
 
     if df_result is None or df_result.empty:
         _debug_print("Mano de obra: ninguna persona cruzada entre Informe y ODS.")

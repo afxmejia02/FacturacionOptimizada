@@ -203,6 +203,20 @@ class TestCompararManoObra(unittest.TestCase):
         df = mo.comparar_mano_obra(informe, ods)
         self.assertEqual(df.iloc[0]["Salario"], ["$120.000", "$125.000"])
 
+    def test_acepta_varios_informes_y_ods(self):
+        # Cada persona viene en un archivo distinto por lado: el cruce debe
+        # encontrar ambas al concatenar los Excel.
+        informe_a = _informe_xlsx([{"doc": "111", "salario": 100000}])
+        informe_b = _informe_xlsx([{"doc": "222", "salario": 200000}])
+        ods_a = _ods_xlsx([{"doc": "111", "salario": 100000}])
+        ods_b = _ods_xlsx([{"doc": "222", "salario": 200000}])
+
+        df = mo.comparar_mano_obra([informe_a, informe_b], [ods_a, ods_b])
+
+        docs = set(df[mo.COL_DOCUMENTO].astype(str))
+        self.assertEqual(docs, {"111", "222"})
+        self.assertEqual(len(df), 2)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

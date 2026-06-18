@@ -45,7 +45,8 @@ con `__new__` para reutilizar los métodos **sin** abrir ventanas.
 
 Se usa a través de la interfaz Streamlit del repositorio (ver el
 [README raíz](../README.md)): herramienta **“Validación PDF + Excel”**, eligiendo
-el tipo (perfiles / equipos y servicios) y subiendo uno o varios PDF y el Excel.
+el tipo (perfiles / equipos y servicios) y subiendo uno o varios PDF y uno o
+varios Excel (la planilla histórica se arma sumando todos los Excel).
 Los resultados se pueden **filtrar por fecha y por tipo**
 (servicio/equipo/perfil), de forma independiente o combinada.
 
