@@ -1,13 +1,14 @@
 # Facturación – Validación de pagos (PDF vs Excel)
 
-Compara los **conteos de un PDF de facturación** contra la **planilla histórica de
-Excel**, cruzando por fecha. Sirve para validar:
+Compara los **conteos de uno o varios PDFs de facturación** contra la **planilla
+histórica de Excel**, cruzando por fecha. Sirve para validar:
 
 - **perfiles** – niveles/perfiles facturados (columna `Nivel/Perfil`).
-- **equipos** – tipos de equipo.
-- **servicios** – tipos de servicio.
-- **equipos y servicios** – ambos a la vez, incluso si vienen en un mismo PDF que
-  mezcla páginas de los dos formatos.
+- **equipos y servicios** – equipos y/o servicios a la vez, incluso si vienen en
+  un mismo PDF que mezcla páginas de los dos formatos.
+
+Se pueden subir **varios PDF** en una misma validación; los conteos de todos se
+acumulan antes de cruzarlos contra el Excel.
 
 Para cada fecha y concepto se muestra el valor del PDF, el del Excel y un estado
 (`OK` o `Valores diferentes`).
@@ -44,8 +45,8 @@ con `__new__` para reutilizar los métodos **sin** abrir ventanas.
 
 Se usa a través de la interfaz Streamlit del repositorio (ver el
 [README raíz](../README.md)): herramienta **“Validación PDF + Excel”**, eligiendo
-el tipo (perfiles / equipos / servicios / equipos y servicios) y subiendo el PDF
-y el Excel. Los resultados se pueden **filtrar por fecha y por tipo**
+el tipo (perfiles / equipos y servicios) y subiendo uno o varios PDF y el Excel.
+Los resultados se pueden **filtrar por fecha y por tipo**
 (servicio/equipo/perfil), de forma independiente o combinada.
 
 El Excel debe contener la columna `DESCRIPCION TARIFA` y columnas de fecha

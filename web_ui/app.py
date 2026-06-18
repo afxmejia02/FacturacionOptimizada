@@ -164,17 +164,19 @@ def _render_export_buttons(key, default_name, titulo, archivos, secciones, sourc
 def _render_pagos_form() -> None:
     tipo = st.selectbox(
         "Tipo de validación",
-        ["equipos", "servicios", "equipos y servicios", "perfiles"],
+        ["equipos y servicios", "perfiles"],
     )
-    pdf_file = st.file_uploader("Archivo PDF", type=["pdf"])
+    pdf_files = st.file_uploader(
+        "Archivos PDF", type=["pdf"], accept_multiple_files=True
+    )
     excel_file = st.file_uploader("Archivo Excel", type=["xlsx", "xls"])
     submit = st.form_submit_button("Procesar")
 
     if not submit:
         return
 
-    if not pdf_file:
-        st.error("Por favor sube un archivo PDF.")
+    if not pdf_files:
+        st.error("Por favor sube al menos un archivo PDF.")
         return
     if not excel_file:
         st.error("Por favor sube un archivo Excel.")
@@ -182,7 +184,7 @@ def _render_pagos_form() -> None:
 
     try:
         with st.spinner("Procesando archivos..."):
-            df_display, message = process_pagos(pdf_file, excel_file, tipo)
+            df_display, message = process_pagos(pdf_files, excel_file, tipo)
         if message:
             st.info(message)
             st.session_state.pagos_result_df = None
@@ -191,7 +193,10 @@ def _render_pagos_form() -> None:
         else:
             st.session_state.pagos_result_df = df_display
             st.session_state.pagos_result_tipo = tipo
-            st.session_state.pagos_files = {"PDF": pdf_file.name, "Excel": excel_file.name}
+            st.session_state.pagos_files = {
+                "PDF": ", ".join(f.name for f in pdf_files),
+                "Excel": excel_file.name,
+            }
     except Exception as exc:
         print("[ERROR][web_ui] Procesamiento fallido en pagos")
         traceback.print_exc()

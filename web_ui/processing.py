@@ -195,18 +195,18 @@ def _extract_excel_perfiles_by_date(excel_path: str) -> pd.DataFrame:
     return df_largo.rename(columns={"VALOR": "Excel"})
 
 
-def build_perfiles_table(pdf_source, excel_source) -> pd.DataFrame:
-    """Cross PDF profile counts against the Excel history, grouped by date."""
+def build_perfiles_table(pdf_sources, excel_source) -> pd.DataFrame:
+    """Cross PDF profile counts against the Excel history, grouped by date.
+
+    ``pdf_sources`` puede ser un único PDF o una lista; los conteos de todos se
+    acumulan antes de cruzar contra el Excel.
+    """
+    if not isinstance(pdf_sources, (list, tuple)):
+        pdf_sources = [pdf_sources]
+
     empty = pd.DataFrame(columns=["Fecha", "Nivel/Perfil", "PDF", "Excel", "Estado"])
     with tempfile.TemporaryDirectory(prefix="web_ui_perfiles_table_") as tmp_dir:
-        pdf_path = os.path.join(tmp_dir, "upload.pdf")
         excel_path = os.path.join(tmp_dir, "upload.xlsx")
-
-        if hasattr(pdf_source, "getbuffer"):
-            with open(pdf_path, "wb") as pdf_handle:
-                pdf_handle.write(pdf_source.getbuffer())
-        else:
-            pdf_path = str(pdf_source)
 
         if hasattr(excel_source, "getbuffer"):
             with open(excel_path, "wb") as excel_handle:
@@ -214,11 +214,26 @@ def build_perfiles_table(pdf_source, excel_source) -> pd.DataFrame:
         else:
             excel_path = str(excel_source)
 
-        df_pdf = _extract_perfiles_by_date(pdf_path)
+        partes_pdf = []
+        for idx, pdf_source in enumerate(pdf_sources):
+            if hasattr(pdf_source, "getbuffer"):
+                pdf_path = os.path.join(tmp_dir, f"upload_{idx}.pdf")
+                with open(pdf_path, "wb") as pdf_handle:
+                    pdf_handle.write(pdf_source.getbuffer())
+            else:
+                pdf_path = str(pdf_source)
+            df_parte = _extract_perfiles_by_date(pdf_path)
+            if not df_parte.empty:
+                partes_pdf.append(df_parte)
+
         df_excel = _extract_excel_perfiles_by_date(excel_path)
 
-        if df_pdf.empty or df_excel.empty:
+        if not partes_pdf or df_excel.empty:
             return empty
+
+        df_pdf = pd.concat(partes_pdf, ignore_index=True).groupby(
+            ["FECHA", "PERFIL_NORM", "Nivel/Perfil"], as_index=False
+        )["PDF"].sum()
 
         df_merge = df_pdf.merge(
             df_excel, on=["FECHA", "PERFIL_NORM", "Nivel/Perfil"], how="outer"
@@ -243,41 +258,56 @@ def build_perfiles_table(pdf_source, excel_source) -> pd.DataFrame:
 # Pagos (equipos / servicios / perfiles)
 # ---------------------------------------------------------------------------
 
-def process_pagos(pdf_file, excel_file, tipo):
+def process_pagos(pdf_files, excel_file, tipo):
     """Compare PDF counts against the Excel history for equipos/servicios/perfiles.
+
+    ``pdf_files`` puede ser un único archivo o una lista de varios PDFs; los
+    conteos de todos ellos se acumulan antes de cruzar contra el Excel.
 
     Returns ``(df_display, message)``: a results DataFrame (with a ``Fecha`` and
     ``Estado`` column, ready for the date filter + coloured table) or, when there
     is nothing to show, ``message`` explains why and ``df_display`` is ``None``.
     """
+    if not isinstance(pdf_files, (list, tuple)):
+        pdf_files = [pdf_files]
+
     _debug_print(
-        f"Inicio process_pagos. tipo={tipo}, pdf={getattr(pdf_file, 'name', 'N/A')}, "
+        f"Inicio process_pagos. tipo={tipo}, "
+        f"pdfs={[getattr(f, 'name', 'N/A') for f in pdf_files]}, "
         f"excel={getattr(excel_file, 'name', 'N/A')}"
     )
     validator_obj = _new_validator()
 
     with tempfile.TemporaryDirectory(prefix="web_ui_") as tmp_dir:
-        pdf_path = os.path.join(tmp_dir, "upload.pdf")
         excel_path = os.path.join(tmp_dir, "upload.xlsx")
-
-        with open(pdf_path, "wb") as pdf_handle:
-            pdf_handle.write(pdf_file.getbuffer())
         with open(excel_path, "wb") as excel_handle:
             excel_handle.write(excel_file.getbuffer())
+
+        pdf_paths = []
+        for idx, pdf_file in enumerate(pdf_files):
+            pdf_path = os.path.join(tmp_dir, f"upload_{idx}.pdf")
+            with open(pdf_path, "wb") as pdf_handle:
+                pdf_handle.write(pdf_file.getbuffer())
+            pdf_paths.append(pdf_path)
 
         rows = []
 
         if tipo == "perfiles":
-            df_display = build_perfiles_table(pdf_path, excel_path)
+            df_display = build_perfiles_table(pdf_paths, excel_path)
             _debug_print(f"Tabla perfiles construida. filas={len(df_display)}")
             if df_display.empty:
                 return None, "No se encontraron perfiles en el PDF o no fue posible cruzarlos por fecha."
             return df_display, None
         else:
-            df_pdf = validator_obj._extraer_conteo_pdf(pdf_path, tipo)
-            if df_pdf is None or df_pdf.empty:
+            partes_pdf = []
+            for pdf_path in pdf_paths:
+                df_parte = validator_obj._extraer_conteo_pdf(pdf_path, tipo)
+                if df_parte is not None and not df_parte.empty:
+                    partes_pdf.append(df_parte)
+            if not partes_pdf:
                 return None, f"No se encontraron elementos válidos de tipo {tipo} en el PDF."
 
+            df_pdf = pd.concat(partes_pdf, ignore_index=True)
             pdf_agg = df_pdf.groupby(["FECHA", "TIPO DE EQUIPO"], as_index=False)["CANTIDAD"].sum()
 
             for fecha in sorted(pdf_agg["FECHA"].dropna().unique()):
