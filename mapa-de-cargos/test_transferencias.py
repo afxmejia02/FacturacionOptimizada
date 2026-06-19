@@ -87,6 +87,21 @@ class TestMatchLineaTransferencia(unittest.TestCase):
         linea = "ORTEGON GOMEZ JIMMER EDUARDO 91513843 603168089 250415 PAGO NOMINA BCA 2,447,732.00"
         data = self.app._match_linea_transferencia(linea)
         self.assertEqual(data["Fecha"], pd.Timestamp("2025-04-15"))
+        self.assertTrue(data["EsNomina"])
+
+    def test_candidato_sin_etiqueta_nomina_se_extrae(self):
+        # Layout "consulta de pagos a terceros": sin etiqueta NÓMINA ni fecha de
+        # quincena. Debe extraerse como candidato (EsNomina=False, Fecha=None).
+        linea = (
+            "00000000670833904 SOTO JARABA JOSE MIGUEL 1005179167 259152502 "
+            "670F0422518500DZ 20250704 2,677,442.00"
+        )
+        data = self.app._match_linea_transferencia(linea)
+        self.assertIsNotNone(data)
+        self.assertEqual(data["Documento"], "1005179167")
+        self.assertEqual(data["Valor"], 2677442.0)
+        self.assertFalse(data["EsNomina"])
+        self.assertIsNone(data["Fecha"])
 
     def test_lineas_que_no_son_pago_devuelven_none(self):
         for linea in (
@@ -171,6 +186,32 @@ class TestReconcileData(unittest.TestCase):
         ])
         df_t, _ = self.app._reconcile_data(despr, trans, None)
         self.assertEqual(df_t.iloc[0]["Estado"], "OK")
+
+    def test_candidata_se_rescata_por_valor_y_se_descarta_la_ajena(self):
+        # Caso real SOTO JARABA: el pago 2Q viene en un layout sin etiqueta NÓMINA
+        # ni fecha de quincena (candidato). Debe rescatarse porque su valor coincide
+        # con el neto 2Q; un importe que no esté en los netos (p. ej. prima) se descarta.
+        despr = pd.DataFrame([
+            {"Identificacion": "1005179167", "Neto": 4457982, "Devengado": None, "Cuenta": "x",
+             "PeriodoInicio": pd.Timestamp("2025-06-01"), "PeriodoFin": pd.Timestamp("2025-06-15")},
+            {"Identificacion": "1005179167", "Neto": 2677442, "Devengado": None, "Cuenta": "x",
+             "PeriodoInicio": pd.Timestamp("2025-06-01"), "PeriodoFin": pd.Timestamp("2025-06-30")},
+        ])
+        trans = pd.DataFrame([
+            # Confiable (NÓMINA) con fecha dentro de la ventana.
+            {"Documento": "1005179167", "Cuenta": "x", "Valor": 4457982,
+             "Fecha": pd.Timestamp("2025-06-15"), "EsNomina": True},
+            # Candidata sin fecha cuyo valor coincide con el neto 2Q -> se rescata.
+            {"Documento": "1005179167", "Cuenta": "x", "Valor": 2677442,
+             "Fecha": pd.NaT, "EsNomina": False},
+            # Candidata cuyo valor NO está en los netos -> se descarta.
+            {"Documento": "1005179167", "Cuenta": "x", "Valor": 4787967,
+             "Fecha": pd.NaT, "EsNomina": False},
+        ])
+        df_t, _ = self.app._reconcile_data(despr, trans, None)
+        fila = df_t.iloc[0]
+        self.assertEqual(fila["Estado"], "OK")
+        self.assertEqual(sorted(fila["Valores_transferencia"]), [2677442, 4457982])
 
 
 if __name__ == "__main__":

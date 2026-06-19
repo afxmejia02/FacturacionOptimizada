@@ -29,6 +29,7 @@ import re
 
 import os
 import unicodedata
+from collections import Counter
 from pathlib import Path
 import threading
 
@@ -614,18 +615,20 @@ class PayrollReconciliationApp:
           - fecha = el número de factura (YYMMDD) justo antes de "PAGO", que indica
             la quincena del soporte (se usa luego para filtrar por periodo).
 
-        Devuelve ``None`` si la línea no parece un renglón de pago de nómina.
+        Hay un segundo layout (la "consulta de pagos a terceros" del banco) cuyos
+        renglones **no traen la etiqueta NÓMINA** ni la fecha-factura de quincena
+        (solo la fecha de consignación, que puede ser de otro mes). Esos renglones
+        se devuelven como **candidatos** (``EsNomina=False``): se extraen documento
+        y valor, pero solo se aceptan en la conciliación si su valor coincide con
+        un neto del desprendible (los que no, pueden ser de otra quincena).
+
+        Devuelve ``None`` si la línea no parece un renglón de pago.
         """
         plano = self._normalizar_linea_ocr(linea)
         if not plano:
             return None
 
-        # 1) La línea debe parecer un pago de NÓMINA (señal tolerante a OCR).
-        m_nomina = _RE_NOMINA.search(plano)
-        if not m_nomina:
-            return None
-
-        # 2) Documento del beneficiario: primer grupo de 5-15 dígitos.
+        # 1) Documento del beneficiario: primer grupo de 5-15 dígitos.
         m_doc = _RE_DOCUMENTO.search(plano)
         if not m_doc:
             return None
@@ -634,14 +637,26 @@ class PayrollReconciliationApp:
         # Quitar un eventual número de "Productos" al inicio del renglón.
         nombre = re.sub(r"^[\d\s]+", "", nombre).strip(" -") or None
 
-        # 3) Valor: primer importe DESPUÉS de la etiqueta de destino. Así no se
-        #    confunde con la columna "ods" (1-3 dígitos) al final del renglón.
-        importes_post = _RE_IMPORTE.findall(plano[m_nomina.end():])
-        if importes_post:
-            valor = self._limpiar_numero(importes_post[0])
+        # 2) ¿Trae la etiqueta NÓMINA? (señal tolerante a OCR). Si la trae, es una
+        #    transferencia confiable; si no, es un candidato a validar por valor.
+        m_nomina = _RE_NOMINA.search(plano)
+        es_nomina = bool(m_nomina)
+
+        # 3) Valor.
+        if m_nomina:
+            # Confiable: primer importe DESPUÉS de la etiqueta de destino. Así no se
+            # confunde con la columna "ods" (1-3 dígitos) al final del renglón.
+            importes_post = _RE_IMPORTE.findall(plano[m_nomina.end():])
+            if importes_post:
+                valor = self._limpiar_numero(importes_post[0])
+            else:
+                importes = _RE_IMPORTE.findall(plano)
+                valor = self._limpiar_numero(importes[-1]) if importes else None
         else:
-            # Respaldo: último importe del renglón completo.
-            importes = _RE_IMPORTE.findall(plano)
+            # Candidato: último importe monetario (con separador de miles/decimales)
+            # tras el documento, que es la columna "Vr. Pago" en este layout. Exigir
+            # el separador evita tomar identificadores/consecutivos como valor.
+            importes = [t for t in _RE_IMPORTE.findall(plano[m_doc.end():]) if re.search(r"[.,]", t)]
             valor = self._limpiar_numero(importes[-1]) if importes else None
         if valor is None:
             return None
@@ -667,6 +682,7 @@ class PayrollReconciliationApp:
             "Nombre": nombre,
             "Valor": valor,
             "Fecha": fecha,
+            "EsNomina": es_nomina,
         }
 
     def _process_transferencia_italco(self, folder_path):
@@ -1254,17 +1270,28 @@ class PayrollReconciliationApp:
                 )
                 grupo_trans = df_transferencia[por_documento | por_cuenta]
 
-            # Filtrar por periodo: conservar solo transferencias cuya fecha de
-            # factura caiga dentro de la ventana de los desprendibles. Las que no
-            # tienen fecha legible se conservan (no se pueden clasificar) y se
-            # registra en el log. Evita sumar quincenas/meses ajenos al soporte.
+            # Separar transferencias confiables (con etiqueta NÓMINA) de las
+            # candidatas (otro layout sin etiqueta ni fecha-factura de quincena).
+            # Si no hay columna 'EsNomina' (formato TABARCA o datos antiguos), se
+            # tratan todas como confiables -> comportamiento previo intacto.
+            if not grupo_trans.empty and "EsNomina" in grupo_trans.columns:
+                es_nom = grupo_trans["EsNomina"].fillna(True).astype(bool)
+                trans_confiables = grupo_trans[es_nom]
+                trans_candidatas = grupo_trans[~es_nom]
+            else:
+                trans_confiables = grupo_trans
+                trans_candidatas = grupo_trans.iloc[0:0]
+
+            # Filtrar por periodo SOLO las confiables: conservar las que caen dentro
+            # de la ventana de los desprendibles (las sin fecha legible se conservan).
+            # Evita sumar quincenas/meses ajenos al soporte.
             if (
-                not grupo_trans.empty
+                not trans_confiables.empty
                 and win_ini is not None
                 and win_fin is not None
-                and "Fecha" in grupo_trans.columns
+                and "Fecha" in trans_confiables.columns
             ):
-                fechas = pd.to_datetime(grupo_trans["Fecha"], errors="coerce")
+                fechas = pd.to_datetime(trans_confiables["Fecha"], errors="coerce")
                 en_ventana = fechas.isna() | ((fechas >= win_ini) & (fechas <= win_fin))
                 descartadas = int((~en_ventana).sum())
                 if descartadas:
@@ -1272,7 +1299,31 @@ class PayrollReconciliationApp:
                         f"[reconcile] doc={doc}: {descartadas} transferencia(s) fuera del "
                         f"periodo [{win_ini.date()}..{win_fin.date()}] descartada(s)."
                     )
-                grupo_trans = grupo_trans[en_ventana]
+                trans_confiables = trans_confiables[en_ventana]
+
+            # Candidatas: solo valen si su valor coincide con un neto del desprendible
+            # que aún no haya sido cubierto por una transferencia confiable. Así se
+            # rescata el pago real (mismo valor que el neto) aunque el renglón no
+            # traiga etiqueta/fecha, y se descartan importes de otra quincena.
+            candidatas_validas = trans_candidatas.iloc[0:0]
+            if not trans_candidatas.empty:
+                val_conf = _normalizar_lista(trans_confiables["Valor"].dropna().tolist()) if not trans_confiables.empty else []
+                pendientes = Counter(int(round(float(n))) for n in netos if pd.notna(n))
+                pendientes.subtract(Counter(int(round(float(v))) for v in val_conf))
+                idx_keep = []
+                for idx_c, val_c in trans_candidatas["Valor"].dropna().items():
+                    clave = int(round(float(val_c)))
+                    if pendientes.get(clave, 0) > 0:
+                        idx_keep.append(idx_c)
+                        pendientes[clave] -= 1
+                    else:
+                        self._log(
+                            f"[reconcile] doc={doc}: transferencia candidata {val_c} sin neto "
+                            f"que la respalde -> descartada (posible otra quincena)."
+                        )
+                candidatas_validas = trans_candidatas.loc[idx_keep]
+
+            grupo_trans = pd.concat([trans_confiables, candidatas_validas])
 
             if not grupo_trans.empty:
                 valores_trans = _normalizar_lista(grupo_trans["Valor"].dropna().tolist())

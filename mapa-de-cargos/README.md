@@ -51,11 +51,21 @@ reutiliza la web:
 
   El cruce es por documento o por cuenta (normalizando ceros de relleno) y,
   además, **se filtra por periodo**: de cada desprendible se extrae
-  `Periodo: <inicio> al <fin>` y solo se conservan las transferencias cuya fecha
-  de factura cae dentro de esa ventana. Así no se suman quincenas/meses ajenos
-  (p. ej. una transferencia de marzo o mayo al conciliar abril). Hay logs que
-  explican cada “Transferencia no encontrada” y cada transferencia descartada
-  por periodo.
+  `Periodo: <inicio> al <fin>` y solo se conservan las transferencias **confiables**
+  (con etiqueta NÓMINA) cuya fecha de factura cae dentro de esa ventana. Así no se
+  suman quincenas/meses ajenos (p. ej. una transferencia de marzo o mayo al
+  conciliar abril).
+
+  Algunos soportes vienen en otro layout (la “consulta de pagos a terceros” del
+  banco) cuyos renglones **no traen etiqueta NÓMINA ni la fecha-factura de
+  quincena** (solo la fecha de consignación, que puede ser de otro mes). Esos
+  renglones se extraen como **candidatos** (`EsNomina=False`) y se aceptan **solo
+  si su valor coincide con un neto del desprendible** aún no cubierto por una
+  transferencia confiable; los importes que no estén en los netos se descartan
+  (pueden ser de otra quincena, o conceptos como prima). Así el pago real se
+  rescata aunque el renglón no traiga etiqueta/fecha, sin introducir falsos
+  positivos. Hay logs que explican cada “Transferencia no encontrada”, cada
+  transferencia descartada por periodo y cada candidata descartada por valor.
 
 > Importante: el formato de los desprendibles debe coincidir con el de las
 > transferencias / seguridad social. La web pasa el mismo `formato` a todos los
