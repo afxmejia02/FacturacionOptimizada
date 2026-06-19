@@ -13,6 +13,15 @@ acumulan antes de cruzarlos contra el Excel.
 Para cada fecha y concepto se muestra el valor del PDF, el del Excel y un estado
 (`OK` o `Valores diferentes`).
 
+La comparación es **bidireccional**: además de verificar que lo del PDF esté en el
+Excel, comprueba que lo del Excel (en la sección correspondiente) esté en el PDF.
+Para no comparar contra secciones ajenas (perfiles, etc.), se detecta a qué
+sección del histograma corresponde cada PDF por el **título de la página**
+(p. ej. “…ELEMENTOS, HERRAMIENTAS Y EQUIPOS TRANSVERSALES” → `5.5`; “…OBRAS O
+SERVICIOS TÍPICOS” → `5.6`) y solo se cruza esa sección. Una tarifa que esté en el
+Excel con **valor 0** y sin registro en el PDF se considera válida (no se muestra);
+una con valor > 0 ausente del PDF se marca como diferencia.
+
 ## Componente principal
 
 `gui_validation_app.py` define la clase **`ServicesValidationApp`**. Métodos clave
@@ -21,12 +30,14 @@ que reutiliza la web:
 - `_extraer_conteo_pdf(path, tipo)` – conteos por fecha desde el PDF. `tipo` puede
   ser `perfiles`, `equipos`, `servicios` o `equipos_servicios` (alias:
   `"equipos y servicios"`, `"todos"`).
-- `_extraer_conteo_excel(path, fecha)` – conteos de la planilla para una fecha.
-  Si la columna `UNIDAD` de una tarifa dice **`MES`**, el valor viene como
-  fracción de mes (1 unidad/día = 1/30 ≈ 0.033); se convierte a unidad diaria
-  multiplicando por 30 (`DIAS_POR_MES`) y se **aproxima al entero más cercano**
-  (0.099 → 2.97 → 3), para que cruce con el conteo diario del PDF. Las tarifas en
-  `DÍA` no se alteran.
+- `_extraer_conteo_excel(path, fecha)` – conteos de la planilla para una fecha
+  (valor **tal cual** del Excel, sin conversión de unidades).
+- `_leer_histograma_largo(path, prefijos_cod=None)` – histograma en formato largo
+  (`FECHA`, `DESCRIPCION TARIFA`, `CLAVE`, `VALOR`), **conservando ceros** y
+  filtrable por sección (`COD. TAR.`). Es la base del cruce bidireccional.
+- `_prefijos_seccion_pdf(path_hist, paths_pdf)` – casa el título de cada página de
+  los PDF con la descripción del encabezado de sección del histograma y devuelve
+  su `COD. TAR.` (p. ej. `5.5`, `5.6`).
 - `_clave_equipo` – clave de emparejamiento robusta: pliega tildes/mayúsculas,
   descarta signos y conjunciones (y/o/e/u) y **elimina espacios**, de modo que
   `(10H)` y `(10 H)` cruzan igual.

@@ -322,42 +322,70 @@ def process_pagos(pdf_files, excel_files, tipo):
             if not partes_pdf:
                 return None, f"No se encontraron elementos válidos de tipo {tipo} en el PDF."
 
+            # Lado PDF: conteos por (fecha, clave robusta), guardando el nombre legible.
             df_pdf = pd.concat(partes_pdf, ignore_index=True)
-            pdf_agg = df_pdf.groupby(["FECHA", "TIPO DE EQUIPO"], as_index=False)["CANTIDAD"].sum()
+            df_pdf["FECHA"] = pd.to_datetime(df_pdf["FECHA"], errors="coerce").dt.normalize()
+            df_pdf["CLAVE"] = df_pdf["TIPO DE EQUIPO"].astype(str).map(validator_obj._clave_equipo)
+            pdf_agg = df_pdf.groupby(["FECHA", "CLAVE"], as_index=False).agg(
+                CANTIDAD=("CANTIDAD", "sum"),
+                Nombre=("TIPO DE EQUIPO", "first"),
+            )
 
-            for fecha in sorted(pdf_agg["FECHA"].dropna().unique()):
-                # La planilla histórica puede venir en varios Excel: se suman los
-                # conteos de todos para esa fecha.
-                conteo_excel = {}
-                for excel_path in excel_paths:
-                    for clave, valor in validator_obj._extraer_conteo_excel(excel_path, fecha).items():
-                        conteo_excel[clave] = conteo_excel.get(clave, 0) + valor
-                pdf_fecha = pdf_agg[pdf_agg["FECHA"] == fecha]
-                all_servicios = sorted(
-                    pdf_fecha["TIPO DE EQUIPO"].dropna().astype(str).unique().tolist()
+            # Secciones del histograma a las que corresponden los PDF (5.5 equipos,
+            # 5.6 servicios...), detectadas por el título de cada página. Así la
+            # validación bidireccional solo abarca lo que el PDF debía reportar.
+            prefijos = []
+            for excel_path in excel_paths:
+                prefijos = validator_obj._prefijos_seccion_pdf(excel_path, pdf_paths)
+                if prefijos:
+                    break
+            _debug_print(f"Secciones del histograma detectadas para los PDF: {prefijos or '(sin filtro)'}")
+
+            # Lado Excel: histograma en largo, filtrado a esas secciones (conserva
+            # ceros) y sumado entre varios Excel.
+            partes_excel = []
+            for excel_path in excel_paths:
+                try:
+                    partes_excel.append(
+                        validator_obj._leer_histograma_largo(excel_path, prefijos or None)
+                    )
+                except Exception:
+                    print(f"[WARN][web_ui] No se pudo leer el histograma {excel_path}")
+                    traceback.print_exc()
+            if partes_excel:
+                df_excel = pd.concat(partes_excel, ignore_index=True).groupby(
+                    ["FECHA", "CLAVE"], as_index=False
+                ).agg({"VALOR": "sum", "DESCRIPCION TARIFA": "first"})
+            else:
+                df_excel = pd.DataFrame(columns=["FECHA", "CLAVE", "VALOR", "DESCRIPCION TARIFA"])
+
+            # Cruce bidireccional: todo lo del PDF debe estar en el Excel y viceversa.
+            merged = pdf_agg.merge(df_excel, on=["FECHA", "CLAVE"], how="outer")
+            for _, r in merged.iterrows():
+                pdf_cnt = format_count(r["CANTIDAD"]) if pd.notna(r.get("CANTIDAD")) else 0
+                excel_cnt = format_count(r["VALOR"]) if pd.notna(r.get("VALOR")) else 0
+                # Ambos ausentes/cero: válido (p. ej. tarifa en Excel con valor 0 y
+                # sin registro en el PDF). No aporta información -> no se muestra.
+                if float(pdf_cnt or 0) == 0 and float(excel_cnt or 0) == 0:
+                    continue
+                nombre = r.get("Nombre")
+                if not (isinstance(nombre, str) and nombre.strip()):
+                    nombre = r.get("DESCRIPCION TARIFA")
+                fecha = r["FECHA"]
+                estado = "OK" if pdf_cnt == excel_cnt else "Valores diferentes"
+                rows.append(
+                    {
+                        "Fecha": fecha.strftime("%Y-%m-%d") if hasattr(fecha, "strftime") else str(fecha),
+                        "Servicio": nombre,
+                        "PDF": pdf_cnt,
+                        "Excel": excel_cnt,
+                        "Estado": estado,
+                    }
                 )
 
-                for servicio in all_servicios:
-                    pdf_match = pdf_fecha[pdf_fecha["TIPO DE EQUIPO"] == servicio]
-                    pdf_cnt = format_count(pdf_match["CANTIDAD"].sum()) if not pdf_match.empty else 0
-                    if float(pdf_cnt or 0) == 0:
-                        continue
-                    # Emparejar por clave robusta (tolera comillas/conjunciones).
-                    excel_cnt = format_count(
-                        conteo_excel.get(validator_obj._clave_equipo(servicio), 0)
-                    )
-                    estado = "OK" if pdf_cnt == excel_cnt else "Valores diferentes"
-                    rows.append(
-                        {
-                            "Fecha": fecha.strftime("%Y-%m-%d") if hasattr(fecha, "strftime") else str(fecha),
-                            "Servicio": servicio,
-                            "PDF": pdf_cnt,
-                            "Excel": excel_cnt,
-                            "Estado": estado,
-                        }
-                    )
-
             df_display = pd.DataFrame(rows)
+            if not df_display.empty:
+                df_display = df_display.sort_values(["Fecha", "Servicio"]).reset_index(drop=True)
 
         if df_display.empty:
             _debug_print("No hay datos para comparar en process_pagos.")

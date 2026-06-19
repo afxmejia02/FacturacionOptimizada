@@ -92,31 +92,38 @@ class TestExtraccionUnificada(unittest.TestCase):
         self.assertEqual(registros[0]["CANTIDAD"], 3.0)
 
 
-class TestConversionUnidadMes(unittest.TestCase):
-    """Tarifas en 'MES' se pasan a unidad diaria (× 30) y se aproximan al entero."""
+class TestHistogramaPorSeccion(unittest.TestCase):
+    """Lectura del histograma en largo, filtrada por sección y conservando ceros."""
 
     def setUp(self):
         self.app = _app()
 
     def _hist_xlsx(self, fecha):
-        # Encabezado real con columna UNIDAD + una columna de fecha (datetime).
+        # Dos secciones: 5.5 (equipos) y 5.6 (servicios). Incluye un ítem en 0.
         matriz = [
             ["COD. TAR.", "DESCRIPCION TARIFA", "UNIDAD", "VLR. UND.", "CANTIDAD", "VLR. TOTAL", fecha],
-            ["1.1", "CAMPEROS O CAMIONETAS 4X2 (10 HORAS)", "MES", 1, 1, 1, 0.099],
-            ["1.2", "Nivel E11", "DÍA", 1, 1, 1, 11],
+            ["5.5", "ELEMENTOS, HERRAMIENTAS Y EQUIPOS TRANSVERSALES", None, None, None, None, None],
+            ["5.5.1.1", "CAMIÓN-GRÚA DE 10 TON (10 H)", "DÍA", 1, 1, 1, 2],
+            ["5.6", "OBRAS O SERVICIOS TÍPICOS", None, None, None, None, None],
+            ["5.6.2.7.1", "GAMMAGRAFÍAS (RADIOGRAFÍA CONVENCIONAL)", "UN", 1, 1, 1, 5],
+            ["5.6.2.7.2", "Radiografía digital computarizada", "UN", 1, 1, 1, 0],
         ]
         path = os.path.join(tempfile.mkdtemp(), "hist.xlsx")
         pd.DataFrame(matriz).to_excel(path, header=False, index=False)
         return path
 
-    def test_mes_a_diaria_y_dia_sin_cambios(self):
+    def test_filtra_por_seccion_y_conserva_ceros_y_valor_tal_cual(self):
         fecha = dt.datetime(2026, 5, 25)
         path = self._hist_xlsx(fecha)
-        d = self.app._extraer_conteo_excel(path, fecha)
-        # 0.099 × 30 = 2.97 -> 3
-        self.assertEqual(d[self.app._clave_equipo("CAMPEROS O CAMIONETAS 4X2 (10 HORAS)")], 3.0)
-        # Las tarifas en DÍA no se alteran.
-        self.assertEqual(d[self.app._clave_equipo("Nivel E11")], 11.0)
+        # Solo sección 5.6 (servicios): no debe traer el equipo de 5.5.
+        largo = self.app._leer_histograma_largo(path, ["5.6"])
+        claves = set(largo["CLAVE"])
+        self.assertIn(self.app._clave_equipo("GAMMAGRAFÍAS (RADIOGRAFÍA CONVENCIONAL)"), claves)
+        self.assertIn(self.app._clave_equipo("Radiografía digital computarizada"), claves)  # cero conservado
+        self.assertNotIn(self.app._clave_equipo("CAMIÓN-GRÚA DE 10 TON (10 H)"), claves)
+        # El valor se toma tal cual (sin conversión de unidades).
+        gamma = largo[largo["CLAVE"] == self.app._clave_equipo("GAMMAGRAFÍAS (RADIOGRAFÍA CONVENCIONAL)")]
+        self.assertEqual(gamma["VALOR"].iloc[0], 5)
 
 
 if __name__ == "__main__":

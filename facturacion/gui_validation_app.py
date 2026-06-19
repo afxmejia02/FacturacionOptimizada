@@ -518,10 +518,6 @@ class ServicesValidationApp:
     _ETIQUETAS_EQUIPO = ("equipo", "tipo de equipo", "tipo equipo")
     _ETIQUETAS_SERVICIO = ("servicio", "tipo de servicio", "servicios")
 
-    # Factor para convertir tarifas en "MES" a unidad diaria (1 unidad/día = 1/30
-    # de mes). Se multiplica el valor del histograma por este número.
-    DIAS_POR_MES = 30
-
     def _extraer_registros_etiqueta(self, tablas, etiquetas):
         """Registros ``[FECHA, TIPO DE EQUIPO, CANTIDAD]`` de una página cuyo
         'tipo' (equipo o servicio) está en una etiqueta tipo ``EQUIPO:`` /
@@ -719,37 +715,115 @@ class ServicesValidationApp:
         if not cols_fecha:
             raise ValueError("No date columns detected in Excel file.")
 
-        # Columna de unidad (UNIDAD): algunas tarifas se registran en "MES" en vez
-        # de por día. En esas filas el valor diario viene como fracción de mes
-        # (1 unidad/día = 1/30 ≈ 0.033), por eso se convierte a unidad diaria.
-        col_unidad = next(
-            (c for c in df_niveles.columns if self._normalizar_busqueda(c) == "unidad"),
-            None,
-        )
-
         cols_id = [col for col in df_niveles.columns if col not in cols_fecha]
         df_largo = df_niveles.melt(id_vars=cols_id, value_vars=cols_fecha, var_name="FECHA", value_name="VALOR")
         df_largo["FECHA"] = pd.to_datetime(df_largo["FECHA"], errors="coerce").dt.normalize()
 
         df_fecha = df_largo[df_largo["FECHA"] == fecha_reporte].copy()
         df_fecha = df_fecha[df_fecha["VALOR"].notna()]
-        df_fecha["VALOR"] = pd.to_numeric(df_fecha["VALOR"], errors="coerce")
-        df_fecha = df_fecha[df_fecha["VALOR"].notna()]
-
-        # Las filas en "MES" se pasan a unidad diaria (× 30) y se aproximan al
-        # entero más cercano: 0.099 → 2.97 → 3 (no se usa == exacto porque la
-        # conversión deja decimales como 0.99 / 1.98 / 2.97).
-        if col_unidad is not None:
-            es_mes = df_fecha[col_unidad].map(self._normalizar_busqueda) == "mes"
-            df_fecha.loc[es_mes, "VALOR"] = (
-                df_fecha.loc[es_mes, "VALOR"] * self.DIAS_POR_MES
-            ).round()
-
         # Clave robusta para que el emparejamiento tolere comillas/conjunciones.
         df_fecha["PERFIL_NORM"] = df_fecha["DESCRIPCION TARIFA"].apply(self._clave_equipo)
         df_fecha = df_fecha.groupby(["PERFIL_NORM"], as_index=False)["VALOR"].sum()
         df_fecha = df_fecha[df_fecha["VALOR"] != 0]
         return df_fecha.set_index("PERFIL_NORM")["VALOR"].to_dict()
+
+    def _col_codigo_tarifa(self, df):
+        """Devuelve el nombre de la columna de código de tarifa (``COD. TAR.``)."""
+        return next(
+            (c for c in df.columns if "cod" in self._normalizar_busqueda(str(c))),
+            None,
+        )
+
+    def _prefijos_seccion_pdf(self, path_hist, paths_pdf):
+        """Detecta a qué secciones del histograma corresponden los PDF.
+
+        Cada página de los PDF trae como **título** (primera línea) la sección a
+        la que pertenece (p. ej. "...ELEMENTOS, HERRAMIENTAS Y EQUIPOS
+        TRANSVERSALES" o "...OBRAS O SERVICIOS TÍPICOS"). Ese título se casa con la
+        descripción del encabezado de sección del histograma y se devuelve su
+        ``COD. TAR.`` (p. ej. ``5.5`` para equipos, ``5.6`` para servicios). Así la
+        validación bidireccional solo abarca lo que el PDF debía reportar y no
+        otras secciones (perfiles, etc.).
+
+        Devuelve la lista de prefijos de código (sin duplicar). Vacía si no logra
+        emparejar ningún título (en ese caso el llamador no filtra por sección).
+        """
+        if isinstance(paths_pdf, (str, os.PathLike)):
+            paths_pdf = [paths_pdf]
+
+        titulos = set()
+        for path in paths_pdf:
+            try:
+                with pdfplumber.open(path) as pdf:
+                    for page in pdf.pages:
+                        texto = page.extract_text() or ""
+                        for linea in texto.splitlines()[:1]:  # título = 1ª línea
+                            if linea.strip():
+                                titulos.add(self._normalizar_busqueda(linea))
+            except Exception:
+                continue
+        if not titulos:
+            return []
+
+        df_hist = self._leer_excel_facturacion(path_hist)
+        col_cod = self._col_codigo_tarifa(df_hist)
+        if col_cod is None or "DESCRIPCION TARIFA" not in df_hist.columns:
+            return []
+
+        prefijos = []
+        for _, row in df_hist.iterrows():
+            desc = row.get("DESCRIPCION TARIFA")
+            cod = row.get(col_cod)
+            if not isinstance(desc, str) or pd.isna(cod):
+                continue
+            desc_norm = self._normalizar_busqueda(desc)
+            # Solo descripciones de sección (suficientemente largas) contenidas en
+            # algún título de página del PDF.
+            if len(desc_norm) >= 10 and any(desc_norm in t for t in titulos):
+                prefijos.append(str(cod).strip())
+        return list(dict.fromkeys(prefijos))
+
+    def _leer_histograma_largo(self, path_hist, prefijos_cod=None):
+        """Histograma en formato largo por fecha, para validación bidireccional.
+
+        Devuelve un DataFrame con columnas ``FECHA``, ``DESCRIPCION TARIFA``,
+        ``CLAVE`` y ``VALOR`` (un registro por tarifa y fecha). **Conserva los
+        ceros** (un valor 0 en el Excel sin registro en el PDF es válido). Si
+        ``prefijos_cod`` se indica, solo se conservan las tarifas cuyo
+        ``COD. TAR.`` pertenece a esas secciones (p. ej. ``5.5`` / ``5.6``).
+
+        El valor se toma **tal cual** del Excel (sin conversión de unidades).
+        """
+        df_hist = self._leer_excel_facturacion(path_hist)
+        if "DESCRIPCION TARIFA" not in df_hist.columns:
+            raise KeyError("Excel file missing 'DESCRIPCION TARIFA' column.")
+
+        df_niveles = df_hist[df_hist["DESCRIPCION TARIFA"].notna()].copy()
+
+        if prefijos_cod:
+            col_cod = self._col_codigo_tarifa(df_niveles)
+            if col_cod is not None:
+                cods = df_niveles[col_cod].astype(str).str.strip()
+                mask = pd.Series(False, index=df_niveles.index)
+                for pref in prefijos_cod:
+                    pref = str(pref).strip()
+                    mask |= (cods == pref) | cods.str.startswith(pref + ".")
+                df_niveles = df_niveles[mask]
+
+        cols_fecha = [c for c in df_niveles.columns if isinstance(c, (pd.Timestamp, dt.datetime))]
+        if not cols_fecha:
+            raise ValueError("No date columns detected in Excel file.")
+
+        cols_id = [c for c in df_niveles.columns if c not in cols_fecha]
+        largo = df_niveles.melt(id_vars=cols_id, value_vars=cols_fecha, var_name="FECHA", value_name="VALOR")
+        largo["FECHA"] = pd.to_datetime(largo["FECHA"], errors="coerce").dt.normalize()
+        largo = largo[largo["VALOR"].notna()]
+        largo["VALOR"] = pd.to_numeric(largo["VALOR"], errors="coerce")
+        largo = largo[largo["VALOR"].notna()]
+        largo["CLAVE"] = largo["DESCRIPCION TARIFA"].apply(self._clave_equipo)
+        return largo.groupby(["FECHA", "CLAVE"], as_index=False).agg(
+            {"VALOR": "sum", "DESCRIPCION TARIFA": "first"}
+        )
 
     def _comparar_conteos(self, df_pdf, path_excel):
         if df_pdf is None or df_pdf.empty:
