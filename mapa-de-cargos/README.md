@@ -74,12 +74,25 @@ reutiliza la web:
 ### Conciliación de seguridad social (devengado vs IBC)
 
 Para ambos formatos, `_reconcile_data` agrupa los desprendibles por cédula, suma
-el **devengado** y lo compara contra los **IBC** reportados en la planilla:
+el **devengado** y lo compara contra la **suma de los IBC** reportados en la
+planilla (misma lógica de suma que transferencias):
 
-- `OK` – el devengado total coincide con un IBC único.
-- `Devengado no coincide` – no hay coincidencia (o falta el IBC).
-- `IBC sin soporte` – coincide pero hay más de un IBC para la cédula.
+- `OK` – la suma de devengados coincide con la suma de IBC.
+- `Devengado no coincide` – las sumas difieren (o falta el IBC).
 - `Devengado no encontrado` – el desprendible no traía devengado.
+
+> **Devengados repetidos:** en seguridad social los devengados **no se
+> deduplican** (`_normalizar_lista_completa`): dos quincenas con el mismo
+> devengado se suman ambas. (La deduplicación, vía `_normalizar_lista`, se aplica
+> solo al cruce de **transferencias**.)
+
+> **IBC sumados:** todos los IBC de la cédula se suman antes de comparar, no se
+> exige un IBC único que coincida por sí solo (p. ej. `182.210 + 8.274.618 =
+> 8.456.828` cruza con un devengado de `8.456.828`).
+
+Tanto transferencias como seguridad social incluyen una columna **`Diferencia`**:
+neto − transferencia en el primero, devengado − IBC en el segundo (lo ausente
+cuenta como 0). Aplica a los formatos TABARCA e ITALCO.
 
 ### Mano de obra (Informe de Costo vs ODS)
 

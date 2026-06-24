@@ -1189,6 +1189,18 @@ class PayrollReconciliationApp:
                 normalizados.append(numero)
             return normalizados
 
+        def _normalizar_lista_completa(valores):
+            """Como ``_normalizar_lista`` pero **sin deduplicar**.
+
+            Para seguridad social los devengados/IBC pueden repetirse entre
+            quincenas (dos quincenas con el mismo valor) y deben contarse ambas.
+            """
+            return [
+                numero
+                for numero in (_normalizar_numero(v) for v in (valores or []))
+                if numero is not None
+            ]
+
         resultados = []
         resultados_transfers = []
         resultados_seguridad = []
@@ -1238,8 +1250,11 @@ class PayrollReconciliationApp:
         # Agrupar desprendibles por identificación y conciliar con transferencias
         for doc, grupo_despr in df_desprendibles.groupby("Identificacion"):
             netos = _normalizar_lista(grupo_despr["Neto"].dropna().tolist())
-            # Devengado: tomar valores únicos (puede haber varios)
-            devs = _normalizar_lista(grupo_despr["Devengado"].dropna().tolist()) if "Devengado" in grupo_despr else []
+            suma_netos = _normalizar_numero(sum(netos)) if netos else None
+            # Devengado: sumar TODOS los valores SIN deduplicar. Dos quincenas con
+            # el mismo devengado deben contarse ambas (a diferencia del cruce de
+            # transferencias, donde sí se deduplica).
+            devs = _normalizar_lista_completa(grupo_despr["Devengado"].dropna().tolist()) if "Devengado" in grupo_despr else []
             sum_devs = _normalizar_numero(sum(devs)) if devs else None
 
             cta = grupo_despr["Cuenta"].iloc[0] if "Cuenta" in grupo_despr.columns else None
@@ -1261,6 +1276,7 @@ class PayrollReconciliationApp:
             grupo_trans = pd.DataFrame()
             estado_trans = "Transferencia no encontrada"
             valores_trans = []
+            suma_trans = None
             if hay_transferencias:
                 por_documento = df_transferencia["Documento"] == doc
                 por_cuenta = (
@@ -1327,11 +1343,7 @@ class PayrollReconciliationApp:
 
             if not grupo_trans.empty:
                 valores_trans = _normalizar_lista(grupo_trans["Valor"].dropna().tolist())
-                # Sumar valores y comparar con la suma de netos
-                try:
-                    suma_netos = _normalizar_numero(sum(netos)) if netos else None
-                except Exception:
-                    suma_netos = None
+                # Sumar valores y comparar con la suma de netos.
                 try:
                     suma_trans = _normalizar_numero(sum(valores_trans)) if valores_trans else None
                 except Exception:
@@ -1355,22 +1367,33 @@ class PayrollReconciliationApp:
                         f"que cruce por documento ni por cuenta -> 'Transferencia no encontrada'."
                     )
 
-            # Obtener IBCs desde df_seguridad si está disponible
+            # Obtener IBCs desde df_seguridad si está disponible. NO se deduplican:
+            # se suman todos (igual que el cruce de transferencias).
             ibc_vals = []
             if df_seguridad is not None and not df_seguridad.empty:
                 matches = df_seguridad[df_seguridad["cc"] == doc]
                 if not matches.empty:
-                    ibc_vals = _normalizar_lista(matches["ibc"].dropna().tolist())
+                    ibc_vals = _normalizar_lista_completa(matches["ibc"].dropna().tolist())
+            suma_ibc = _normalizar_numero(sum(ibc_vals)) if ibc_vals else None
 
-            # Construir estado para seguridad social (IBC vs Devengado)
+            # Estado seguridad social: comparar SUMA de devengados vs SUMA de IBC.
             if sum_devs is None:
                 estado_seg = "Devengado no encontrado"
-            elif not ibc_vals or sum_devs not in ibc_vals:
-                estado_seg = "Devengado no coincide"
-            elif len(ibc_vals) > 1:
-                estado_seg = "IBC sin soporte"
-            else:
+            elif suma_ibc is not None and sum_devs == suma_ibc:
                 estado_seg = "OK"
+            else:
+                estado_seg = "Devengado no coincide"
+
+            # Diferencia = devengado(desprendible) - IBC(seguridad). Lo ausente cuenta como 0.
+            diferencia_seg = (
+                _normalizar_numero((sum_devs or 0) - (suma_ibc or 0))
+                if sum_devs is not None else None
+            )
+            # Diferencia = neto(desprendible) - transferencia. Lo ausente cuenta como 0.
+            diferencia_trans = (
+                _normalizar_numero((suma_netos or 0) - (suma_trans or 0))
+                if (suma_netos is not None or suma_trans is not None) else None
+            )
 
             # Agregar resultado para transferencias (usa suma para OK)
             resultados_transfers.append({
@@ -1379,6 +1402,7 @@ class PayrollReconciliationApp:
                 "Estado": estado_trans,
                 "Neto_desprendibles": list(netos),
                 "Valores_transferencia": list(valores_trans) if valores_trans is not None else None,
+                "Diferencia": diferencia_trans,
             })
 
             # Agregar resultado para seguridad social (IBC)
@@ -1387,6 +1411,7 @@ class PayrollReconciliationApp:
                 "Estado": estado_seg,
                 "Devengado": sum_devs,
                 "IBC": ibc_vals if ibc_vals else None,
+                "Diferencia": diferencia_seg,
             })
         df_t = pd.DataFrame(resultados_transfers)
         df_s = pd.DataFrame(resultados_seguridad)

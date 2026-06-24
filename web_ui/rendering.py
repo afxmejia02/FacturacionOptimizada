@@ -170,7 +170,7 @@ def format_dataframe(df_in: pd.DataFrame, formatter) -> pd.DataFrame:
     df_tmp = df_in.copy()
     list_cols = [
         col
-        for col in ["Neto_desprendibles", "Valores_transferencia", "Devengado", "IBC"]
+        for col in ["Neto_desprendibles", "Valores_transferencia", "Devengado", "IBC", "Diferencia"]
         if col in df_tmp.columns
     ]
 

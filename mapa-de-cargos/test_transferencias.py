@@ -213,6 +213,65 @@ class TestReconcileData(unittest.TestCase):
         self.assertEqual(fila["Estado"], "OK")
         self.assertEqual(sorted(fila["Valores_transferencia"]), [2677442, 4457982])
 
+    def test_transferencia_incluye_columna_diferencia(self):
+        despr = self._despr([
+            {"Identificacion": "91513843", "Neto": 3457617, "Devengado": None, "Cuenta": "603168089"},
+        ])
+        trans = pd.DataFrame([
+            {"Documento": "91513843", "Cuenta": "603168089", "Valor": 3484422},
+        ])
+        df_t, _ = self.app._reconcile_data(despr, trans, None)
+        fila = df_t.iloc[0]
+        self.assertEqual(fila["Estado"], "Valor no coincide")
+        self.assertEqual(fila["Diferencia"], 3457617 - 3484422)
+
+
+class TestSeguridadSocial(unittest.TestCase):
+    """Seguridad social: suma de IBC, devengados sin deduplicar y columna Diferencia."""
+
+    def setUp(self):
+        self.app = _app()
+
+    def test_devengado_no_se_deduplica_y_suma_ibc_da_ok(self):
+        # Dos quincenas con el MISMO devengado deben sumarse ambas (no deduplicar).
+        despr = pd.DataFrame([
+            {"Identificacion": "63472356", "Neto": 1, "Devengado": 2500950, "Cuenta": "x"},
+            {"Identificacion": "63472356", "Neto": 1, "Devengado": 2500950, "Cuenta": "x"},
+        ])
+        seg = pd.DataFrame([
+            {"cc": "63472356", "ibc": 2500950},
+            {"cc": "63472356", "ibc": 2500950},
+        ])
+        _, df_s = self.app._reconcile_data(despr, None, seg)
+        fila = df_s.iloc[0]
+        self.assertEqual(fila["Devengado"], 5001900)   # ambos devengados sumados
+        self.assertEqual(fila["Estado"], "OK")          # 5001900 == 2500950+2500950
+        self.assertEqual(fila["Diferencia"], 0)
+
+    def test_ok_por_suma_de_varios_ibc(self):
+        # Varios IBC que sumados igualan el devengado -> OK (no por pertenencia).
+        despr = pd.DataFrame([
+            {"Identificacion": "1096185839", "Neto": 1, "Devengado": 8456828, "Cuenta": "x"},
+        ])
+        seg = pd.DataFrame([
+            {"cc": "1096185839", "ibc": 182210},
+            {"cc": "1096185839", "ibc": 8274618},
+        ])
+        _, df_s = self.app._reconcile_data(despr, None, seg)
+        fila = df_s.iloc[0]
+        self.assertEqual(fila["Estado"], "OK")
+        self.assertEqual(fila["Diferencia"], 0)
+
+    def test_diferencia_cuando_no_coincide(self):
+        despr = pd.DataFrame([
+            {"Identificacion": "111", "Neto": 1, "Devengado": 5001900, "Cuenta": "x"},
+        ])
+        seg = pd.DataFrame([{"cc": "111", "ibc": 5040619}])
+        _, df_s = self.app._reconcile_data(despr, None, seg)
+        fila = df_s.iloc[0]
+        self.assertEqual(fila["Estado"], "Devengado no coincide")
+        self.assertEqual(fila["Diferencia"], 5001900 - 5040619)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
