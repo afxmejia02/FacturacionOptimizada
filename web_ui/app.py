@@ -24,7 +24,7 @@ from processing import process_mano_obra, process_pagos, process_reconciliation
 from rendering import build_colored_table
 
 TOOL_LABELS = {
-    "pagos": "Validación PDF + Excel",
+    "pagos": "Pagos Perfiles, Servicios y Equipos",
     "mapa_transferencias": "Mapa de cargos - transferencias",
     "mapa_seguridad": "Mapa de cargos - seguridad social",
     "mapa_mano_obra": "Mapa de cargos - mano de obra",
@@ -166,6 +166,12 @@ def _render_pagos_form() -> None:
         "Tipo de validación",
         ["equipos y servicios", "perfiles"],
     )
+    formato = st.selectbox(
+        "Formato",
+        ["tabarca", "italco"],
+        format_func=lambda value: value.upper(),
+        help="El formato ITALCO solo aplica a la revisión de perfiles.",
+    )
     pdf_files = st.file_uploader(
         "Archivos PDF", type=["pdf"], accept_multiple_files=True
     )
@@ -186,7 +192,7 @@ def _render_pagos_form() -> None:
 
     try:
         with st.spinner("Procesando archivos..."):
-            df_display, message = process_pagos(pdf_files, excel_files, tipo)
+            df_display, message = process_pagos(pdf_files, excel_files, tipo, formato)
         if message:
             st.info(message)
             st.session_state.pagos_result_df = None

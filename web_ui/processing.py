@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 
 import pandas as pd
@@ -264,15 +266,256 @@ def build_perfiles_table(pdf_sources, excel_sources) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Perfiles ITALCO (planilla de personal PDF vs histograma Excel por fecha)
+# ---------------------------------------------------------------------------
+#
+# Diferencias frente a TABARCA:
+#   - El nivel/perfil se toma del **Cargo** de la planilla (``PAILERO 1A E11`` →
+#     ``E11``), no de una columna "Nivel/Perfil" ya normalizada.
+#   - No hay recategorización por observaciones ni casos GLOBAL / 24 horas: cada
+#     fila es una persona (cantidad 1).
+#   - En el histograma el equivalente a ``COD. TAR.`` es ``ITEM PAGO``; al revisar
+#     perfiles se excluyen los ítems de equipos (5.5) y servicios (5.6) para que
+#     el histograma no cuente equipos ni servicios.
+
+def _fecha_iso_italco(valor):
+    """Fecha del reporte ITALCO (``FECHA REPORTE``) en formato ISO ``AAAA-MM-DD``.
+
+    Se parsea como año-mes-día explícito; el parser general de TABARCA usa
+    ``dayfirst=True`` y confundiría ``2026-06-08`` con el 6 de agosto.
+    """
+    if valor is None:
+        return None
+    match = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", str(valor).strip())
+    if not match:
+        return None
+    try:
+        return pd.Timestamp(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+
+
+def _codigo_perfil_italco(texto):
+    """Código de nivel al final de un texto ITALCO.
+
+    En el PDF el Cargo trae el oficio completo (``PAILERO 1A E11``, ``OBRERO A2``)
+    y en el histograma la CATEGORÍA trae ``NIVEL E11``; en ambos el nivel es el
+    código final (``E11``, ``A2``). Se toma solo ese código, igual que TABARCA
+    toma ``E11`` / ``A2``. Devuelve ``None`` si el texto no termina en un código,
+    lo que descarta filas de pie de página o categorías sin nivel.
+    """
+    if not isinstance(texto, str):
+        return None
+    match = re.search(r"([A-Z]\d{1,2})$", texto.strip().upper())
+    return match.group(1) if match else None
+
+
+def _extract_perfiles_italco_by_date(pdf_path: str) -> pd.DataFrame:
+    registros = []
+    validator_obj = _new_validator()
+
+    import pdfplumber
+
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            for tabla in page.extract_tables() or []:
+                fecha = None
+                idx_cargo = None
+                header_idx = None
+                for i, row in enumerate(tabla):
+                    cells = [celda if celda is not None else "" for celda in row]
+                    norm = [validator_obj._normalizar_busqueda(c).replace(" ", "") for c in cells]
+                    if fecha is None and "fechareporte" in norm:
+                        j = norm.index("fechareporte")
+                        for siguiente in cells[j + 1:]:
+                            if siguiente and str(siguiente).strip():
+                                fecha = _fecha_iso_italco(siguiente)
+                                if fecha is not None:
+                                    break
+                    if idx_cargo is None and "cargo" in norm:
+                        idx_cargo = norm.index("cargo")
+                        header_idx = i
+                if idx_cargo is None or fecha is None or header_idx is None:
+                    continue
+
+                for row in tabla[header_idx + 1:]:
+                    if len(row) <= idx_cargo:
+                        continue
+                    codigo = _codigo_perfil_italco(row[idx_cargo])
+                    if not codigo:
+                        continue
+                    registros.append(
+                        {
+                            "FECHA": fecha,
+                            "PERFIL_NORM": codigo,
+                            "Nivel/Perfil": codigo,
+                            "PDF": 1,
+                        }
+                    )
+
+    if not registros:
+        _debug_print("No se extrajeron perfiles ITALCO desde el PDF.")
+        return pd.DataFrame(columns=["FECHA", "PERFIL_NORM", "Nivel/Perfil", "PDF"])
+
+    df = pd.DataFrame(registros)
+    _debug_print(f"Registros de perfiles ITALCO extraidos: {len(df)}")
+    return df.groupby(["FECHA", "PERFIL_NORM", "Nivel/Perfil"], as_index=False)["PDF"].sum()
+
+
+def _leer_histograma_italco(excel_path: str) -> pd.DataFrame:
+    """Lee el histograma ITALCO detectando la fila de encabezado real
+    (``ITEM PAGO | ... | CATEGORÍA | DESCRIPCIÓN | ...``), que no es la primera."""
+    validator_obj = _new_validator()
+    crudo = pd.read_excel(excel_path, header=None)
+    fila_encabezado = 0
+    for i in range(min(25, len(crudo))):
+        celdas = {
+            validator_obj._normalizar_busqueda(v).replace(" ", "") for v in crudo.iloc[i].tolist()
+        }
+        if "itempago" in celdas or "categoria" in celdas:
+            fila_encabezado = i
+            break
+    return pd.read_excel(excel_path, header=fila_encabezado)
+
+
+def _extract_excel_perfiles_italco_by_date(excel_path: str) -> pd.DataFrame:
+    import datetime as _dt
+
+    validator_obj = _new_validator()
+    df_hist = _leer_histograma_italco(excel_path)
+
+    def _col(clave):
+        return next(
+            (c for c in df_hist.columns if clave in validator_obj._normalizar_busqueda(c).replace(" ", "")),
+            None,
+        )
+
+    col_item = _col("itempago")
+    col_categoria = _col("categoria")
+    if col_categoria is None:
+        raise KeyError("El histograma ITALCO no contiene la columna 'CATEGORÍA'.")
+
+    cols_fecha = [c for c in df_hist.columns if isinstance(c, (pd.Timestamp, _dt.datetime))]
+    if not cols_fecha:
+        raise ValueError("No se detectaron columnas de fecha en el histograma ITALCO.")
+
+    df = df_hist.copy()
+    df["PERFIL_NORM"] = df[col_categoria].apply(_codigo_perfil_italco)
+    df = df[df["PERFIL_NORM"].notna()].copy()
+
+    # Excluir equipos (ITEM PAGO 5.5*) y servicios (5.6*) para que el histograma
+    # no cuente equipos ni servicios al revisar perfiles.
+    if col_item is not None:
+        item = df[col_item].astype(str).str.strip()
+        df = df[~(item.str.startswith("5.5") | item.str.startswith("5.6"))].copy()
+
+    df["Nivel/Perfil"] = df["PERFIL_NORM"]
+
+    # Ítems de 24 horas: el ITEM PAGO 5.1.1.4 corresponde a "MANO DE OBRA DIRECTA
+    # 24 HR", donde una persona cubre 3 turnos, así que el histograma reparte su
+    # cantidad en tercios. Se multiplica por 3 y se redondea al entero más cercano
+    # (antes de sumar) para que coincida con el conteo por persona del PDF.
+    if col_item is not None:
+        item = df[col_item].astype(str).str.strip()
+        df["_ES_24H"] = item.eq("5.1.1.4") | item.str.startswith("5.1.1.4.")
+    else:
+        df["_ES_24H"] = False
+
+    df_largo = df.melt(
+        id_vars=["PERFIL_NORM", "Nivel/Perfil", "_ES_24H"],
+        value_vars=cols_fecha,
+        var_name="FECHA",
+        value_name="VALOR",
+    )
+    df_largo["FECHA"] = pd.to_datetime(df_largo["FECHA"], errors="coerce").dt.normalize()
+    df_largo["VALOR"] = pd.to_numeric(df_largo["VALOR"], errors="coerce")
+    df_largo = df_largo[df_largo["VALOR"].notna() & (df_largo["VALOR"] != 0)].copy()
+    es_24h = df_largo["_ES_24H"]
+    # +0.5 y truncado = redondeo al entero más cercano (valores no negativos).
+    df_largo.loc[es_24h, "VALOR"] = (df_largo.loc[es_24h, "VALOR"] * 3 + 0.5).astype(int)
+    df_largo = df_largo.groupby(
+        ["FECHA", "PERFIL_NORM", "Nivel/Perfil"], as_index=False
+    )["VALOR"].sum()
+    return df_largo.rename(columns={"VALOR": "Excel"})
+
+
+def build_perfiles_italco_table(pdf_sources, excel_sources) -> pd.DataFrame:
+    """Cruza los perfiles de la planilla ITALCO contra el histograma, por fecha.
+
+    Equivalente ITALCO de :func:`build_perfiles_table`: el nivel se toma del Cargo
+    (PDF) y de la CATEGORÍA (histograma), del histograma se excluyen los ítems de
+    equipos (5.5) y servicios (5.6), y los ítems de 24 horas (5.1.1.4) se
+    multiplican por 3 y se redondean antes de sumar.
+    """
+    if not isinstance(pdf_sources, (list, tuple)):
+        pdf_sources = [pdf_sources]
+    if not isinstance(excel_sources, (list, tuple)):
+        excel_sources = [excel_sources]
+
+    empty = pd.DataFrame(columns=["Fecha", "Nivel/Perfil", "PDF", "Excel", "Estado"])
+    with tempfile.TemporaryDirectory(prefix="web_ui_perfiles_italco_") as tmp_dir:
+        excel_paths = []
+        for idx, excel_source in enumerate(excel_sources):
+            if hasattr(excel_source, "getbuffer"):
+                excel_path = os.path.join(tmp_dir, f"upload_{idx}.xlsx")
+                with open(excel_path, "wb") as excel_handle:
+                    excel_handle.write(excel_source.getbuffer())
+            else:
+                excel_path = str(excel_source)
+            excel_paths.append(excel_path)
+
+        partes_pdf = []
+        for idx, pdf_source in enumerate(pdf_sources):
+            if hasattr(pdf_source, "getbuffer"):
+                pdf_path = os.path.join(tmp_dir, f"upload_{idx}.pdf")
+                with open(pdf_path, "wb") as pdf_handle:
+                    pdf_handle.write(pdf_source.getbuffer())
+            else:
+                pdf_path = str(pdf_source)
+            df_parte = _extract_perfiles_italco_by_date(pdf_path)
+            if not df_parte.empty:
+                partes_pdf.append(df_parte)
+
+        partes_excel = [_extract_excel_perfiles_italco_by_date(p) for p in excel_paths]
+        partes_excel = [df for df in partes_excel if not df.empty]
+
+        if not partes_pdf or not partes_excel:
+            return empty
+
+        df_pdf = pd.concat(partes_pdf, ignore_index=True).groupby(
+            ["FECHA", "PERFIL_NORM", "Nivel/Perfil"], as_index=False
+        )["PDF"].sum()
+        df_excel = pd.concat(partes_excel, ignore_index=True).groupby(
+            ["FECHA", "PERFIL_NORM", "Nivel/Perfil"], as_index=False
+        )["Excel"].sum()
+
+        df_merge = df_pdf.merge(
+            df_excel, on=["FECHA", "PERFIL_NORM", "Nivel/Perfil"], how="outer"
+        )
+        df_merge["PDF"] = df_merge["PDF"].fillna(0)
+        df_merge["Excel"] = df_merge["Excel"].fillna(0)
+        df_merge["Estado"] = df_merge.apply(
+            lambda row: "OK" if row["PDF"] == row["Excel"] else "Valores diferentes", axis=1
+        )
+        df_merge = df_merge.rename(columns={"FECHA": "Fecha"})
+        df_merge["Fecha"] = pd.to_datetime(df_merge["Fecha"], errors="coerce").dt.strftime("%Y-%m-%d")
+        df_merge = df_merge[["Fecha", "Nivel/Perfil", "PDF", "Excel", "Estado"]]
+        return df_merge.sort_values(["Fecha", "Nivel/Perfil"]).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
 # Pagos (equipos / servicios / perfiles)
 # ---------------------------------------------------------------------------
 
-def process_pagos(pdf_files, excel_files, tipo):
+def process_pagos(pdf_files, excel_files, tipo, formato="tabarca"):
     """Compare PDF counts against the Excel history for equipos/servicios/perfiles.
 
     ``pdf_files`` / ``excel_files`` pueden ser un único archivo o una lista de
     varios; los conteos de todos los PDFs se acumulan, y la planilla histórica se
     arma sumando todos los Excel, antes de cruzar.
+
+    ``formato`` (``tabarca`` / ``italco``) solo aplica a ``perfiles``: elige entre
+    la planilla/cuadro TABARCA y la planilla de personal + histograma ITALCO.
 
     Returns ``(df_display, message)``: a results DataFrame (with a ``Fecha`` and
     ``Estado`` column, ready for the date filter + coloured table) or, when there
@@ -284,7 +527,7 @@ def process_pagos(pdf_files, excel_files, tipo):
         excel_files = [excel_files]
 
     _debug_print(
-        f"Inicio process_pagos. tipo={tipo}, "
+        f"Inicio process_pagos. tipo={tipo}, formato={formato}, "
         f"pdfs={[getattr(f, 'name', 'N/A') for f in pdf_files]}, "
         f"excels={[getattr(f, 'name', 'N/A') for f in excel_files]}"
     )
@@ -308,8 +551,11 @@ def process_pagos(pdf_files, excel_files, tipo):
         rows = []
 
         if tipo == "perfiles":
-            df_display = build_perfiles_table(pdf_paths, excel_paths)
-            _debug_print(f"Tabla perfiles construida. filas={len(df_display)}")
+            if str(formato).lower() == "italco":
+                df_display = build_perfiles_italco_table(pdf_paths, excel_paths)
+            else:
+                df_display = build_perfiles_table(pdf_paths, excel_paths)
+            _debug_print(f"Tabla perfiles ({formato}) construida. filas={len(df_display)}")
             if df_display.empty:
                 return None, "No se encontraron perfiles en el PDF o no fue posible cruzarlos por fecha."
             return df_display, None
