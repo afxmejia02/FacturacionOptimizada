@@ -286,6 +286,15 @@ def _render_mano_obra_form() -> None:
         "Cruza el **Informe de Costo** contra el registro de la **ODS** por número "
         "de documento. Resalta solo la celda del campo que no coincide."
     )
+    formato = st.selectbox(
+        "Formato",
+        ["tabarca", "italco"],
+        format_func=lambda value: value.upper(),
+        help=(
+            "ITALCO usa la progresión (filas de DIFERENCIA, nombre completo y "
+            "fechas de actividades) en lugar de la hoja 'Informe' de TABARCA."
+        ),
+    )
     informe_files = st.file_uploader(
         "Excel Informe de Costo",
         type=["xlsx", "xls"],
@@ -311,7 +320,7 @@ def _render_mano_obra_form() -> None:
 
     try:
         with st.spinner("Comparando mano de obra..."):
-            table_html, message, df_result = process_mano_obra(informe_files, ods_files)
+            table_html, message, df_result = process_mano_obra(informe_files, ods_files, formato)
         if message:
             st.info(message)
             st.session_state.mano_obra_df = None

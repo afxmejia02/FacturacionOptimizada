@@ -725,12 +725,16 @@ def process_reconciliation(despr_files, trans_files, seguridad_files, recon_mode
 # Mano de obra (mapa de cargos: Informe de Costo vs registro de la ODS)
 # ---------------------------------------------------------------------------
 
-def process_mano_obra(informe_files, ods_files):
+def process_mano_obra(informe_files, ods_files, formato="tabarca"):
     """Cross the Informe de Costo against the ODS registry, per worker.
 
     ``informe_files`` / ``ods_files`` pueden ser un único archivo o una lista de
     varios Excel por lado; cada uno se lee por separado y se concatena antes de
     cruzar.
+
+    ``formato`` (``tabarca`` / ``italco``) elige el layout del Informe: TABARCA
+    usa la hoja ``Informe`` y ITALCO la progresión (filas de DIFERENCIA, nombre
+    completo y fechas de actividades).
 
     Returns ``(table_html, message, df_result)`` where ``df_result`` keeps the
     list-valued comparison cells (one element = match, two = mismatch) so the
@@ -758,7 +762,7 @@ def process_mano_obra(informe_files, ods_files):
                 handle.write(ods_file.getbuffer())
             ods_paths.append(ods_path)
 
-        df_result = mano_obra.comparar_mano_obra(informe_paths, ods_paths)
+        df_result = mano_obra.comparar_mano_obra(informe_paths, ods_paths, formato=formato)
 
     if df_result is None or df_result.empty:
         _debug_print("Mano de obra: ninguna persona cruzada entre Informe y ODS.")

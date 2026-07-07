@@ -94,6 +94,44 @@ def _ods_xlsx(filas):
     return buffer
 
 
+def _informe_italco_xlsx(filas):
+    """Crea un Informe ITALCO (progresión) en memoria.
+
+    El encabezado real no es la primera fila (hay filas de título arriba) y la
+    primera columna no tiene nombre: marca ACTUAL / ANTERIOR / DIFERENCIA. Por
+    cada persona se emiten las tres filas; solo la de DIFERENCIA debe usarse.
+    """
+    titulos = [
+        [None, "Union temporal Italco"],
+        [None, "PROYECTO UT Barranca"],
+        [None, "INFORMACION DE NOMINA"],
+    ]
+    header = [
+        None, "Mes", "Documento", "Nombre Completo", "Tipo de Contrato",
+        "Fecha de Inicio", "Fecha retiro", "Perfil Contable", "Cargo", "Sueldo Base",
+    ]
+    datos = []
+    for f in filas:
+        # El Sueldo Base solo importa en la fila ACTUAL (de ahí sale el salario
+        # diario); en ANTERIOR/DIFERENCIA se pone un delta cualquiera.
+        sueldo = {"ACTUAL": f.get("sueldo_base_actual"), "ANTERIOR": 0, "DIFERENCIA": 123}
+        for marca in ("ACTUAL", "ANTERIOR", "DIFERENCIA"):
+            datos.append([
+                marca, "2025 7", f["doc"], f.get("nombre", "JUAN PEREZ"),
+                "ECP R", f.get("fecha_inicio"), f.get("fecha_retiro"),
+                f.get("perfil", "BCA OS 37 CONVENCIONAL"), f.get("cargo", "OBRERO A"),
+                sueldo[marca],
+            ])
+    matriz = titulos + [header] + datos
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        pd.DataFrame(matriz).to_excel(
+            writer, sheet_name="PROGRESION JULIO 2025", header=False, index=False
+        )
+    buffer.seek(0)
+    return buffer
+
+
 class TestNormalizarMoneda(unittest.TestCase):
     def test_numericos_y_strings_equivalentes(self):
         for valor in (120000, 120000.0, "120000", "$120.000", "120,000", "  $ 120.000 "):
@@ -227,6 +265,176 @@ class TestCompararManoObra(unittest.TestCase):
         docs = set(df[mo.COL_DOCUMENTO].astype(str))
         self.assertEqual(docs, {"111", "222"})
         self.assertEqual(len(df), 2)
+
+
+class TestMapeoItalco(unittest.TestCase):
+    """El mapeo ITALCO compara nombre completo, cargo y las dos fechas de actividades."""
+
+    def _entrada(self, etiqueta):
+        return next(e for e in mo.MAPEO_ITALCO if e[0] == etiqueta)
+
+    def test_fecha_inicio_contra_inicio_actividades(self):
+        _, col_inf, col_ods, tipo = self._entrada("Fecha Inicio")
+        self.assertEqual(col_inf, "Fecha de Inicio")
+        self.assertIn("inicio_de_actividades", col_ods)
+        self.assertEqual(tipo, "fecha")
+
+    def test_fecha_retiro_contra_fin_actividades(self):
+        _, col_inf, col_ods, tipo = self._entrada("Fecha Retiro")
+        self.assertEqual(col_inf, "Fecha retiro")
+        self.assertIn("fin_de_actividades", col_ods)
+
+    def test_nombre_completo_contra_combinado_ods(self):
+        _, col_inf, col_ods, _ = self._entrada("Nombre Completo")
+        self.assertEqual(col_inf, "Nombre Completo")
+        self.assertEqual(col_ods, mo.COL_NOMBRE_COMPLETO_ODS)
+
+    def test_cargo_usa_tipo_cargo(self):
+        _, _, _, tipo = self._entrada("Cargo")
+        self.assertEqual(tipo, "cargo")
+
+    def test_os_contra_orden_servicio(self):
+        _, col_inf, col_ods, tipo = self._entrada("OS")
+        self.assertEqual(col_inf, "OS")
+        self.assertIn("orden_de_servicio", col_ods)
+        self.assertEqual(tipo, "os")
+
+
+class TestOsComparable(unittest.TestCase):
+    def test_extrae_numero_de_ambos_formatos(self):
+        # Informe "BCA OS 37 CONVENCIONAL" y ODS "0DS37" deben coincidir en 37.
+        self.assertEqual(mo._os_comparable("BCA OS 37 CONVENCIONAL"), "37")
+        self.assertEqual(mo._os_comparable("0DS37"), "37")
+        self.assertEqual(mo._os_comparable("BCA OS 37 CONVENCIONAL"), mo._os_comparable("0DS37"))
+
+    def test_distinta_os_difiere(self):
+        self.assertNotEqual(mo._os_comparable("BCA OS 37"), mo._os_comparable("0DS44"))
+
+    def test_vacio(self):
+        self.assertEqual(mo._os_comparable(None), "")
+        self.assertEqual(mo._os_comparable("SIN NUMERO"), "")
+
+
+class TestNormCargo(unittest.TestCase):
+    def test_ignora_marcador_progresion(self):
+        # El "(PROGRE)" del Informe no debe contar como diferencia.
+        self.assertEqual(
+            mo.norm_cargo("AYUDANTE TECNICO A / TUBERIA C6 (PROGRE)"),
+            mo.norm_cargo("AYUDANTE TECNICO  A / TUBERIA C6"),
+        )
+
+    def test_conserva_diferencias_reales(self):
+        # E12 vs E11 sigue siendo una diferencia real.
+        self.assertNotEqual(
+            mo.norm_cargo("ELECTRICISTA 1A E12 (PROGRE)"),
+            mo.norm_cargo("ELECTRICISTA 1A E11"),
+        )
+
+
+class TestCoincidenCargo(unittest.TestCase):
+    """Un cargo del Informe con alternativas 'A / B' coincide si la ODS matchea una."""
+
+    def test_ods_matchea_una_alternativa(self):
+        # ODS "ANDAMIERO B" coincide con la primera alternativa de "ANDAMIERO B / D8".
+        self.assertTrue(mo._coinciden("ANDAMIERO B / D8 (PROGRE)", "ANDAMIERO B", "cargo"))
+
+    def test_ods_con_forma_completa_tambien_coincide(self):
+        self.assertTrue(mo._coinciden(
+            "AYUDANTE TECNICO A / TUBERIA C6 (PROGRE)",
+            "AYUDANTE TECNICO  A / TUBERIA C6",
+            "cargo",
+        ))
+
+    def test_sin_alternativa_comun_difiere(self):
+        self.assertFalse(mo._coinciden("OBRERO A (PROGRE)", "SOLDADOR B", "cargo"))
+
+    def test_uno_vacio_difiere(self):
+        self.assertFalse(mo._coinciden("ANDAMIERO B / D8", "", "cargo"))
+        self.assertTrue(mo._coinciden("", None, "cargo"))
+
+
+class TestCompararManoObraItalco(unittest.TestCase):
+    def test_solo_usa_filas_diferencia_y_cruza_fechas(self):
+        # Documento presente en ambos. Nombre y cargo coinciden; la fecha de
+        # inicio coincide; la de retiro difiere (Informe vacío vs ODS con fecha).
+        informe = _informe_italco_xlsx([{
+            "doc": "91.449.953",
+            "nombre": "ALBEIRO RODRIGUEZ DURAN",
+            "cargo": "AYUDANTE TECNICO A",
+            "perfil": "BCA OS 37 CONVENCIONAL",
+            "sueldo_base_actual": 4077630,  # / 30 = 135.921 (salario diario)
+            "fecha_inicio": dt.datetime(2024, 8, 26),
+            "fecha_retiro": None,
+        }])
+        ods = _ods_xlsx([{
+            "doc": "91449953",
+            "os": "0DS37",  # la ODS trae la OS como "0DS37"
+            "nombres": "ALBEIRO",
+            "apellidos": "RODRIGUEZ DURAN",
+            "cargo": "AYUDANTE TECNICO A",
+            "salario": 135921,  # SalarioDiarioPesos == Sueldo Base ACTUAL / 30
+            "fecha_inicio": dt.datetime(2024, 8, 26),
+            "fecha_fin": dt.datetime(2025, 8, 30),
+        }])
+        df = mo.comparar_mano_obra(informe, ods, formato="italco")
+
+        # Una sola persona (las filas ACTUAL/ANTERIOR se descartan).
+        self.assertEqual(len(df), 1)
+        fila = df.iloc[0]
+        self.assertEqual(
+            list(df.columns),
+            ["Documento", "OS", "Nombre Completo", "Cargo", "Fecha Inicio", "Fecha Retiro", "Salario"],
+        )
+        # OS coincide pese al formato distinto (BCA OS 37 CONVENCIONAL vs 0DS37).
+        self.assertEqual(fila["OS"], ["37"])
+        # Nombre y cargo coinciden -> un elemento.
+        self.assertEqual(fila["Nombre Completo"], ["ALBEIRO RODRIGUEZ DURAN"])
+        self.assertEqual(fila["Cargo"], ["AYUDANTE TECNICO A"])
+        # Fecha inicio coincide, retiro difiere (vacío vs fecha).
+        self.assertEqual(fila["Fecha Inicio"], ["2024-08-26"])
+        self.assertEqual(fila["Fecha Retiro"], ["", "2025-08-30"])
+        # Salario diario = Sueldo Base ACTUAL / 30, coincide con la ODS, en COP.
+        self.assertEqual(fila["Salario"], ["$135.921"])
+
+    def test_salario_diario_deriva_de_actual_no_del_delta(self):
+        # El salario diario sale del Sueldo Base de la fila ACTUAL / 30, NO de la
+        # columna de la fila DIFERENCIA (que es un delta). Aquí difiere de la ODS.
+        informe = _informe_italco_xlsx([{
+            "doc": "5",
+            "sueldo_base_actual": 4598550,  # / 30 = 153.285
+        }])
+        ods = _ods_xlsx([{"doc": "5", "salario": 200000}])  # ODS distinta
+        df = mo.comparar_mano_obra(informe, ods, formato="italco")
+        # Muestra el diario derivado (153.285), no el delta (123) ni el mensual.
+        self.assertEqual(df.iloc[0]["Salario"], ["$153.285", "$200.000"])
+
+    def test_incluye_persona_del_informe_sin_ods(self):
+        # ITALCO lista a todos los del Informe aunque no estén en la ODS: la
+        # persona aparece con el lado ODS en blanco (celdas resaltadas).
+        informe = _informe_italco_xlsx([{
+            "doc": "111",
+            "nombre": "PEDRO GOMEZ",
+            "cargo": "OBRERO A",
+            "fecha_inicio": dt.datetime(2025, 7, 1),
+        }])
+        ods = _ods_xlsx([{"doc": "222"}])  # otra persona: 111 no está en la ODS
+        df = mo.comparar_mano_obra(informe, ods, formato="italco")
+
+        self.assertEqual(list(df[mo.COL_DOCUMENTO]), ["111"])
+        fila = df.iloc[0]
+        # Cada campo con valor en el Informe queda como diferencia (ODS vacío).
+        self.assertEqual(fila["Nombre Completo"], ["PEDRO GOMEZ", ""])
+        self.assertEqual(fila["Cargo"], ["OBRERO A", ""])
+        self.assertEqual(fila["Fecha Inicio"], ["2025-07-01", ""])
+
+    def test_tabarca_tambien_incluye_no_cruzados(self):
+        # TABARCA también lista a quien está en el Informe pero no en la ODS.
+        informe = _informe_xlsx([{"doc": "111", "salario": 100000}])
+        ods = _ods_xlsx([{"doc": "222"}])  # 111 no está en la ODS
+        df = mo.comparar_mano_obra(informe, ods)
+        self.assertEqual(list(df[mo.COL_DOCUMENTO]), ["111"])
+        # El salario del Informe queda como diferencia (ODS vacío).
+        self.assertEqual(df.iloc[0]["Salario"], ["$100.000", ""])
 
 
 if __name__ == "__main__":

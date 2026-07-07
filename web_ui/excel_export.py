@@ -25,23 +25,66 @@ _OK_FONT = Font(color="155724")
 _WRAP_TOP = Alignment(vertical="top", wrap_text=True)
 
 
-def _texto_celda(value, source_labels):
-    """``(texto, es_diferencia)`` para una celda; aplana listas (mano de obra)."""
-    if isinstance(value, (list, tuple)):
-        items = ["" if v is None else str(v) for v in value]
-        if len(items) <= 1:
-            return (items[0] if items else ""), False
-        etiquetas = source_labels or ("Informe", "Lista ODS")
-        return f"{etiquetas[0]}: {items[0]} | {etiquetas[1]}: {items[1]}", True
-
+def _plano(value) -> str:
+    """Texto de una celda escalar; ``""`` para nulos."""
     if value is None:
-        return "", False
+        return ""
     try:
         if pd.isna(value):
-            return "", False
+            return ""
     except (TypeError, ValueError):
         pass
-    return str(value), False
+    return str(value)
+
+
+def _preparar_seccion(df, source_labels):
+    """Prepara ``(headers, filas)`` para una sección, expandiendo mano de obra.
+
+    Las columnas cuyas celdas son listas (comparación de mano de obra) se separan
+    en **dos columnas** —``<col> (Informe)`` y ``<col> (Lista ODS)``— para poder
+    filtrar cada lado por separado en Excel, en vez de un único texto combinado.
+    El resto de columnas (y las demás validaciones) quedan igual.
+
+    Cada celda de ``filas`` es ``(texto, es_diferencia)``; ``es_diferencia`` marca
+    en rojo ambas columnas del par cuando los valores no coinciden.
+    """
+    etiquetas = source_labels or ("Informe", "Lista ODS")
+    columnas = list(df.columns)
+    # Una columna se "desdobla" si alguna de sus celdas es lista (mano de obra).
+    es_lista = {
+        col: df[col].map(lambda v: isinstance(v, (list, tuple))).any() for col in columnas
+    }
+
+    headers = []
+    for col in columnas:
+        if es_lista[col]:
+            headers.append(f"{col} ({etiquetas[0]})")
+            headers.append(f"{col} ({etiquetas[1]})")
+        else:
+            headers.append(str(col))
+
+    filas = []
+    for _, row in df.iterrows():
+        celdas = []
+        for col in columnas:
+            valor = row[col]
+            if not es_lista[col]:
+                celdas.append((_plano(valor), False))
+                continue
+            if isinstance(valor, (list, tuple)):
+                inf = _plano(valor[0]) if len(valor) >= 1 else ""
+                if len(valor) > 1:            # difieren: se guardó (inf, ods)
+                    ods, es_diff = _plano(valor[1]), True
+                else:                          # coinciden: mismo valor en ambos lados
+                    ods, es_diff = inf, False
+            else:                              # escalar en una columna de listas (raro)
+                inf = ods = _plano(valor)
+                es_diff = False
+            celdas.append((inf, es_diff))
+            celdas.append((ods, es_diff))
+        filas.append(celdas)
+
+    return headers, filas
 
 
 def _nombre_hoja(subtitulo, usados):
@@ -99,7 +142,7 @@ def build_results_excel(titulo, archivos, secciones, source_labels=None):
 
     for subtitulo, df in secciones_validas:
         ws = wb.create_sheet(_nombre_hoja(subtitulo or "Resultados", usados))
-        headers = list(df.columns)
+        headers, filas = _preparar_seccion(df, source_labels)
 
         # Encabezado de la tabla.
         for col, header in enumerate(headers, start=1):
@@ -114,9 +157,8 @@ def build_results_excel(titulo, archivos, secciones, source_labels=None):
             None,
         )
 
-        for fila, (_, row) in enumerate(df.iterrows(), start=2):
-            for col, header in enumerate(headers, start=1):
-                texto, es_diff = _texto_celda(row[header], source_labels)
+        for fila, celdas in enumerate(filas, start=2):
+            for col, (texto, es_diff) in enumerate(celdas, start=1):
                 celda = ws.cell(row=fila, column=col, value=texto)
                 celda.alignment = _WRAP_TOP
                 if es_diff:

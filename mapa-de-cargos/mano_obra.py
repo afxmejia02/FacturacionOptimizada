@@ -66,7 +66,8 @@ INFORME_COLUMNAS = {
 }
 
 # (etiqueta visible, columna en el Informe, columna en la ODS, tipo de comparación).
-# tipo: "texto" (mayúsculas/sin acentos), "fecha" (por día), "numero" o "moneda"
+# tipo: "texto" (mayúsculas/sin acentos), "cargo" (como texto pero ignorando el
+#       marcador de progresión "(PROGRE)"), "fecha" (por día), "numero" o "moneda"
 #       ("moneda" compara el valor numérico normalizado y lo muestra en COP).
 # Agrega aquí más campos a validar; el resto del flujo se adapta solo.
 MAPEO_COLUMNAS = [
@@ -99,6 +100,75 @@ MAPEO_COLUMNAS = [
 COL_DOC_ODS = "NumeroDocumento"
 COL_DOCUMENTO = "Documento"
 
+# ---------------------------------------------------------------------------
+# Formato ITALCO
+# ---------------------------------------------------------------------------
+# En ITALCO el Informe es la "progresión" mensual, con un layout distinto al de
+# TABARCA:
+#
+# - una sola hoja cuyo nombre incluye el mes (``PROGRESION JULIO 2025``), así que
+#   se lee la primera hoja, no una llamada "Informe";
+# - el encabezado real no es la primera fila (hay filas de título arriba); se
+#   detecta como la primera fila que trae a la vez ``Documento`` y
+#   ``Nombre Completo``;
+# - la primera columna no tiene nombre y marca ``ACTUAL`` / ``ANTERIOR`` /
+#   ``DIFERENCIA`` por persona. Solo interesan las filas ``DIFERENCIA`` (el
+#   ajuste del mes), así que se filtra por esa columna sin nombre;
+# - el nombre viene como un único ``Nombre Completo`` (no separado en
+#   Nombres/Apellidos), por lo que en la ODS se compara contra la combinación
+#   ``Nombres + Apellidos`` (ver ``COL_NOMBRE_COMPLETO_ODS``);
+# - las fechas comparadas son ``Fecha de Inicio`` y ``Fecha retiro`` del Informe
+#   contra las fechas de actividades del contrato en la ODS.
+
+# Columnas del Informe ITALCO, localizadas por NOMBRE (con alias). ``Documento``
+# se renombra a ``Identificacion`` para reutilizar el mismo cruce por documento
+# que TABARCA.
+INFORME_ITALCO_COLUMNAS = {
+    "Identificacion": ["Documento"],
+    "Nombre Completo": ["Nombre Completo"],
+    "Cargo": ["Cargo"],
+    "Fecha de Inicio": ["Fecha de Inicio"],
+    "Fecha retiro": ["Fecha retiro", "Fecha Retiro"],
+}
+
+# Columna derivada en la ODS: nombre completo = Nombres + Apellidos, para
+# compararlo contra el único ``Nombre Completo`` del Informe ITALCO.
+COL_NOMBRE_COMPLETO_ODS = "_NombreCompletoODS"
+
+# Días del mes usados para pasar el Sueldo Base (mensual) a salario diario en
+# ITALCO. La convención de nómina colombiana usa 30 días/mes, y se verificó que
+# ``Sueldo Base (fila ACTUAL) / 30`` == ``SalarioDiarioPesos`` de la ODS.
+DIAS_MES_ITALCO = 30
+
+# Mapeo de comparación ITALCO (etiqueta, col Informe, col ODS, tipo). A
+# diferencia de TABARCA, aquí las fechas de actividades de la ODS se comparan
+# contra ``Fecha de Inicio`` / ``Fecha retiro`` del Informe (así lo define el
+# formato ITALCO de la progresión).
+MAPEO_ITALCO = [
+    # "os": la OS del Informe sale del "Perfil Contable" (BCA OS 37 CONVENCIONAL)
+    # y la de la ODS viene como "0DS37"; se comparan por su número (37).
+    ("OS", "OS", "No_de_orden_de_servicio_conocido_por_el_contratista", "os"),
+    ("Nombre Completo", "Nombre Completo", COL_NOMBRE_COMPLETO_ODS, "texto"),
+    # "cargo": ignora el marcador de progresión "(PROGRE)" que el Informe añade y
+    # la ODS no, para no marcar como diferencia cargos sustancialmente iguales.
+    ("Cargo", "Cargo", "CargoContratoLaboral", "cargo"),
+    (
+        "Fecha Inicio",
+        "Fecha de Inicio",
+        "Fecha_de_inicio_de_actividades_del_trabajador_para_el_contrato_comercial_u_orden_de_servicio",
+        "fecha",
+    ),
+    (
+        "Fecha Retiro",
+        "Fecha retiro",
+        "Fecha_fin_de_actividades_del_trabajador_para_el_contrato_comercial_u_orden_de_servicio",
+        "fecha",
+    ),
+    # Salario diario del Informe (Sueldo Base de la fila ACTUAL / 30, derivado en
+    # ``leer_informe_italco``) contra el SalarioDiarioPesos de la ODS, en COP.
+    ("Salario", "SalarioDiario", "SalarioDiarioPesos", "moneda"),
+]
+
 
 def solo_digitos(valor) -> str:
     """Deja solo los dígitos (para comparar documentos: ``91.499.442`` -> ``91499442``)."""
@@ -114,6 +184,21 @@ def norm_texto(valor) -> str:
     return re.sub(r"\s+", " ", texto)
 
 
+def norm_cargo(valor) -> str:
+    """Normaliza un cargo para comparar Informe ITALCO contra ODS.
+
+    El Informe de la progresión añade al cargo el marcador ``(PROGRE)`` /
+    ``(PROGRESION)`` que la ODS no trae, así que ``AYUDANTE TECNICO A / TUBERIA
+    C6 (PROGRE)`` y ``AYUDANTE TECNICO A / TUBERIA C6`` son el mismo cargo. Se
+    quita ese paréntesis de progresión (además de la normalización de texto
+    habitual) para que no cuente como diferencia; las diferencias reales del
+    cargo (p. ej. ``E12`` vs ``E11``) se conservan.
+    """
+    texto = norm_texto(valor)                      # mayúsculas, sin acentos, espacios colapsados
+    texto = re.sub(r"\(\s*PROG[A-Z]*\s*\)", "", texto)  # (PROGRE), (PROGRESION), (PROG)
+    return re.sub(r"\s+", " ", texto).strip()
+
+
 def extraer_os(valor) -> int | None:
     """Extrae el número de orden de servicio del texto del centro de costo.
 
@@ -123,6 +208,25 @@ def extraer_os(valor) -> int | None:
         return None
     match = re.search(r"OS\s*0*(\d+)", str(valor), re.IGNORECASE)
     return int(match.group(1)) if match else None
+
+
+def _os_comparable(valor) -> str:
+    """Número de orden de servicio (último grupo de dígitos) para comparar.
+
+    En ITALCO la OS llega con formatos distintos a cada lado: en el Informe como
+    ``BCA OS 37 CONVENCIONAL`` y en la ODS como ``0DS37``. Se reduce ambos al
+    número final (``37``) para compararlos sin depender del texto. Vacío si no
+    hay dígitos.
+    """
+    if valor is None:
+        return ""
+    try:
+        if pd.isna(valor):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    numeros = re.findall(r"\d+", str(valor))
+    return str(int(numeros[-1])) if numeros else ""
 
 
 def normalizar_moneda(valor) -> float | None:
@@ -236,6 +340,8 @@ def _presentacion(valor, tipo) -> str:
         return "" if pd.isna(fecha) else fecha.strftime("%Y-%m-%d")
     if tipo == "moneda":
         return formatear_cop(valor)
+    if tipo == "os":
+        return _os_comparable(valor)
     if tipo == "numero":
         if _es_vacio(valor):
             return ""
@@ -257,10 +363,43 @@ def _comparable(valor, tipo) -> str:
     """
     if tipo == "texto":
         return norm_texto(valor)
+    if tipo == "cargo":
+        return norm_cargo(valor)
+    if tipo == "os":
+        return _os_comparable(valor)
     if tipo == "moneda":
         numero = normalizar_moneda(valor)
         return "" if numero is None else f"{numero:.2f}"
     return _presentacion(valor, tipo)  # fecha y numero ya quedan canónicos
+
+
+def _partes_cargo(valor) -> set[str]:
+    """Alternativas de un cargo separadas por ``/`` (normalizadas, sin ``(PROGRE)``).
+
+    El Informe ITALCO expresa el cargo como alternativas separadas por ``/``
+    (``ANDAMIERO B / D8``): cada tramo es una descripción válida del mismo cargo.
+    """
+    texto = norm_cargo(valor)
+    if not texto:
+        return set()
+    return {parte.strip() for parte in texto.split("/") if parte.strip()}
+
+
+def _coinciden(val_inf, val_ods, tipo) -> bool:
+    """Decide si el valor del Informe y el de la ODS se consideran iguales.
+
+    Para casi todos los tipos es la igualdad de su forma canónica. El tipo
+    ``cargo`` es especial: como el Informe da alternativas separadas por ``/``
+    (``ANDAMIERO B / D8``), basta con que **una** de ellas coincida con alguna de
+    las de la ODS para tomarlo como el mismo cargo.
+    """
+    if tipo == "cargo":
+        partes_inf = _partes_cargo(val_inf)
+        partes_ods = _partes_cargo(val_ods)
+        if not partes_inf or not partes_ods:
+            return partes_inf == partes_ods  # ambos vacíos -> iguales; uno vacío -> difieren
+        return bool(partes_inf & partes_ods)
+    return _comparable(val_inf, tipo) == _comparable(val_ods, tipo)
 
 
 def leer_informe(source) -> pd.DataFrame:
@@ -298,6 +437,93 @@ def leer_ods(source) -> pd.DataFrame:
     return pd.read_excel(source)
 
 
+def leer_informe_italco(source) -> pd.DataFrame:
+    """Lee el Informe ITALCO (progresión) y deja solo las filas de DIFERENCIA.
+
+    Detecta la fila de encabezado real (la primera con ``Documento`` y
+    ``Nombre Completo``, porque hay filas de título arriba) y localiza las columnas
+    usadas por nombre (renombrando ``Documento`` -> ``Identificacion`` para
+    reutilizar el cruce por documento).
+
+    La primera columna, sin nombre, marca ``ACTUAL`` / ``ANTERIOR`` / ``DIFERENCIA``.
+    El resultado son las filas ``DIFERENCIA`` (el ajuste del mes), pero antes de
+    filtrar se guarda el ``Sueldo Base`` de la fila ``ACTUAL`` de cada persona para
+    derivar el salario diario (``Sueldo Base / 30``), ya que en la fila DIFERENCIA
+    la columna de salario es un delta, no el salario real.
+    """
+    crudo = pd.read_excel(source, sheet_name=0, header=None)
+    fila_encabezado = 0
+    for i in range(min(30, len(crudo))):
+        celdas = {norm_texto(v) for v in crudo.iloc[i].tolist()}
+        if "DOCUMENTO" in celdas and "NOMBRE COMPLETO" in celdas:
+            fila_encabezado = i
+            break
+    df = pd.read_excel(source, sheet_name=0, header=fila_encabezado)
+
+    # La primera columna no tiene nombre (pandas la llama "Unnamed: 0") y marca
+    # ACTUAL / ANTERIOR / DIFERENCIA. Se conserva para separar esas filas.
+    col_marca = df.columns[0]
+
+    # nombre_normalizado -> nombre real (primera aparición gana).
+    por_norm: dict[str, object] = {}
+    for col in df.columns:
+        por_norm.setdefault(norm_texto(col), col)
+
+    rename = {}
+    for destino, alias in INFORME_ITALCO_COLUMNAS.items():
+        for nombre in alias:
+            real = por_norm.get(norm_texto(nombre))
+            if real is not None:
+                rename[real] = destino
+                break
+    df = df.rename(columns=rename)
+
+    marca = df[col_marca].map(norm_texto)
+    doc = df["Identificacion"].map(solo_digitos)
+
+    # Sueldo Base de la fila ACTUAL por persona: es el salario mensual vigente; la
+    # fila DIFERENCIA solo trae el delta del mes. doc -> Sueldo Base ACTUAL.
+    col_sueldo = por_norm.get(norm_texto("Sueldo Base"))
+    sueldo_actual: dict[str, float] = {}
+    if col_sueldo is not None:
+        act = marca == "ACTUAL"
+        for d, val in zip(doc[act], df.loc[act, col_sueldo]):
+            monto = normalizar_moneda(val)
+            if d and monto is not None:
+                sueldo_actual[d] = monto
+
+    # Filtrar al ajuste (DIFERENCIA).
+    df = df[marca == "DIFERENCIA"].copy()
+
+    # La OS no es una columna directa: se extrae del "Perfil Contable"
+    # (``BCA OS 37 CONVENCIONAL`` -> ``37``), igual que TABARCA la extrae del
+    # centro de costo.
+    df["OS"] = df["Perfil Contable"] if "Perfil Contable" in df.columns else None
+
+    # Salario diario = Sueldo Base ACTUAL / 30 (mensual -> diario), para comparar
+    # contra el SalarioDiarioPesos de la ODS.
+    doc_dif = df["Identificacion"].map(solo_digitos)
+    df["SalarioDiario"] = [
+        (sueldo_actual[d] / DIAS_MES_ITALCO) if d in sueldo_actual else None
+        for d in doc_dif
+    ]
+    return df
+
+
+def leer_ods_italco(source) -> pd.DataFrame:
+    """Lee la ODS y agrega el nombre completo (Nombres + Apellidos).
+
+    El Informe ITALCO trae un único ``Nombre Completo``; la ODS lo tiene separado
+    en ``Nombres`` y ``Apellidos``, así que se combinan en ``COL_NOMBRE_COMPLETO_ODS``
+    para poder compararlos.
+    """
+    df = leer_ods(source)
+    nombres = df["Nombres"].fillna("").astype(str).str.strip() if "Nombres" in df.columns else ""
+    apellidos = df["Apellidos"].fillna("").astype(str).str.strip() if "Apellidos" in df.columns else ""
+    df[COL_NOMBRE_COMPLETO_ODS] = (nombres + " " + apellidos).str.strip()
+    return df
+
+
 def _leer_y_concatenar(sources, lector) -> pd.DataFrame:
     """Lee una o varias fuentes (ruta/buffer) con ``lector`` y las concatena.
 
@@ -312,16 +538,35 @@ def _leer_y_concatenar(sources, lector) -> pd.DataFrame:
     return pd.concat(partes, ignore_index=True)
 
 
-def comparar_mano_obra(informe_source, ods_source, mapeo=MAPEO_COLUMNAS) -> pd.DataFrame:
+def comparar_mano_obra(informe_source, ods_source, mapeo=None, formato="tabarca") -> pd.DataFrame:
     """Cruza el Informe contra la ODS y devuelve el DataFrame de validación.
 
     ``informe_source`` / ``ods_source`` pueden ser una ruta/buffer (lo que acepte
     ``pandas.read_excel``) o una **lista** de varias fuentes; en ese caso cada
     archivo se lee por separado y se concatena antes de cruzar, de modo que una
     persona de cualquier Informe puede emparejarse con cualquier ODS.
+
+    ``formato`` (``tabarca`` / ``italco``) elige el layout del Informe y el mapeo
+    de comparación: TABARCA usa la hoja ``Informe`` (fila de recobro, OS, salario…)
+    y ITALCO la progresión (filas de DIFERENCIA, nombre completo y fechas de
+    actividades). ``mapeo`` puede forzarse; por defecto se toma el del formato.
+
+    En **ambos** formatos se listan todas las personas del Informe aunque no estén
+    en la ODS: las que no cruzan aparecen con el lado ODS en blanco (todas sus
+    celdas quedan resaltadas), para ver de un vistazo quién está en el Informe pero
+    falta en la ODS.
     """
-    inf = _leer_y_concatenar(informe_source, leer_informe)
-    ods = _leer_y_concatenar(ods_source, leer_ods)
+    es_italco = str(formato).lower() == "italco"
+    if es_italco:
+        inf = _leer_y_concatenar(informe_source, leer_informe_italco)
+        ods = _leer_y_concatenar(ods_source, leer_ods_italco)
+        if mapeo is None:
+            mapeo = MAPEO_ITALCO
+    else:
+        inf = _leer_y_concatenar(informe_source, leer_informe)
+        ods = _leer_y_concatenar(ods_source, leer_ods)
+        if mapeo is None:
+            mapeo = MAPEO_COLUMNAS
 
     inf["_doc"] = inf["Identificacion"].map(solo_digitos)
     ods["_doc"] = ods[COL_DOC_ODS].map(solo_digitos)
@@ -334,17 +579,18 @@ def comparar_mano_obra(informe_source, ods_source, mapeo=MAPEO_COLUMNAS) -> pd.D
     filas = []
     for _, registro in inf.iterrows():
         doc = registro["_doc"]
-        if doc not in ods_por_doc.index:
-            continue  # persona del Informe que no está en la ODS
-        otro = ods_por_doc.loc[doc]
+        en_ods = doc in ods_por_doc.index
+        # Se lista a toda persona del Informe; si no cruza, el lado ODS queda
+        # vacío (None) y sus celdas quedan resaltadas como faltantes.
+        otro = ods_por_doc.loc[doc] if en_ods else None
 
         fila = {COL_DOCUMENTO: doc}
         for etiqueta, col_inf, col_ods, tipo in mapeo:
             val_inf = registro.get(col_inf)
-            val_ods = otro.get(col_ods)
+            val_ods = otro.get(col_ods) if otro is not None else None
             disp_inf = _presentacion(val_inf, tipo)
             disp_ods = _presentacion(val_ods, tipo)
-            if _comparable(val_inf, tipo) == _comparable(val_ods, tipo):
+            if _coinciden(val_inf, val_ods, tipo):
                 fila[etiqueta] = [disp_inf]            # coinciden -> un solo elemento
             else:
                 fila[etiqueta] = [disp_inf, disp_ods]  # difieren -> ambos valores
