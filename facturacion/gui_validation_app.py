@@ -277,6 +277,10 @@ class ServicesValidationApp:
         # Quitar conjunciones sueltas (requiere espacios como límites de palabra)
         # ANTES de eliminar los espacios.
         plano = re.sub(r"\b[yoeu]\b", " ", plano)
+        # El Excel a veces pega la unidad "DÍA"/"DÍAS" al final de la descripción
+        # (p. ej. "... (24 Horas) DÍA") y el PDF no la trae; se descarta esa unidad
+        # final para que emparejen. No se toca "horas": ahí sí discrimina la tarifa.
+        plano = re.sub(r"\bdias?\b\s*$", " ", plano)
         # Sin espacios: "(10 H)" y "(10H)" producen la misma clave.
         return re.sub(r"\s+", "", plano)
 
