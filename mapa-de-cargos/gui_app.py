@@ -441,11 +441,17 @@ class PayrollReconciliationApp:
                         continue
 
                     texto_plano = re.sub(r"\s+", " ", texto)
-                    cc_match = re.search(r"CC:\s*([\d.,]+)", texto_plano, re.IGNORECASE)
-                    neto_match = re.search(r"Total Neto:\s*([\d,\.]+)", texto_plano, re.IGNORECASE)
+                    # Documento: preferir "CC: <num>"; si el CC viene vacío (algunas
+                    # plantillas lo dejan en blanco), usar "Documento <num>" de la
+                    # línea del trabajador.
+                    cc_match = re.search(r"CC:\s*(\d[\d.,]*)", texto_plano, re.IGNORECASE)
+                    doc_match = re.search(r"\bDocumento\b\s*:?\s*(\d[\d.,]*)", texto_plano, re.IGNORECASE)
+                    fuente_doc = cc_match or doc_match
+                    # Los valores pueden traer símbolo "$" (p. ej. "Total Neto: $3,675,627").
+                    neto_match = re.search(r"Total Neto:\s*\$?\s*([\d,\.]+)", texto_plano, re.IGNORECASE)
                     cuenta_match = re.search(r"CUENTA:\s*(\d+)", texto_plano, re.IGNORECASE)
                     # El devengado en ITALCO es el TOTAL INGRESOS (no el Total Neto).
-                    dev_match = re.search(r"TOTAL INGRESOS\s*([\d,\.]+)", texto_plano, re.IGNORECASE)
+                    dev_match = re.search(r"TOTAL INGRESOS\s*\$?\s*([\d,\.]+)", texto_plano, re.IGNORECASE)
                     # Periodo de la quincena: "Periodo: 2025-04-01 al 2025-04-15".
                     # Se usa para descartar transferencias de otras quincenas/meses.
                     periodo_match = re.search(
@@ -454,10 +460,10 @@ class PayrollReconciliationApp:
                         re.IGNORECASE,
                     )
 
-                    if not (cc_match and neto_match):
+                    if not (fuente_doc and neto_match):
                         continue
 
-                    identificacion = re.sub(r"[^\d]", "", cc_match.group(1))
+                    identificacion = re.sub(r"[^\d]", "", fuente_doc.group(1))
                     neto = self._limpiar_numero(neto_match.group(1))
                     devengado = self._limpiar_numero(dev_match.group(1)) if dev_match else None
                     cuenta = cuenta_match.group(1) if cuenta_match else None

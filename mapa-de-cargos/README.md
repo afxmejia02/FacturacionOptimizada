@@ -25,8 +25,10 @@ reutiliza la web:
 
 - **TABARCA** – desprendibles tipo “Comprobante de Nómina” con `Neto a Pagar $…`.
 - **ITALCO** – desprendibles tipo “Comprobante de pago de Nomina”: la cédula va
-  tras `CC:`, el neto tras `Total Neto:` y el **devengado** tras `TOTAL INGRESOS`
-  (sin `$`). Los soportes de transferencia son la “consulta de pagos a terceros”
+  tras `CC:` (y si ese campo viene **vacío**, se toma de `Documento <número>` de
+  la línea del trabajador), el neto tras `Total Neto:` y el **devengado** tras
+  `TOTAL INGRESOS`. Los importes se leen con o **sin símbolo `$`** (algunas
+  plantillas nuevas lo anteponen: `Total Neto: $3,675,627`). Los soportes de transferencia son la “consulta de pagos a terceros”
   del banco (líneas tipo `<nombre> <doc> [cuenta] [fecha] [factura] PAGO NOMINA
   BCA <valor>`). La seguridad social es la “Planilla Resumen” de aportes en
   línea: el documento está en la columna 2 y el IBC de pensión en la columna 26
