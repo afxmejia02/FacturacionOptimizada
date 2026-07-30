@@ -138,8 +138,9 @@ def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
 
                         if recategorizado:
                             fuente = recategorizado
-                        elif es_ef or observacion == "":
-                            # "E y F" (o sin observación): el nivel es el de la columna.
+                        elif es_ef or es_24h_obs or observacion == "":
+                            # "E y F", "24 horas" o sin observación: el nivel es el
+                            # de la columna (no la última palabra de la observación).
                             fuente = perfil.strip() if isinstance(perfil, str) else perfil
                         else:
                             # Otra observación no reconocida: comportamiento previo.
