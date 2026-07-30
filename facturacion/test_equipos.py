@@ -133,28 +133,37 @@ class TestObservacionPerfil(unittest.TestCase):
         self.app = _app()
 
     def test_marcadores_individuales(self):
-        self.assertEqual(self.app._parsear_observacion_perfil("E Y F"), (None, True, False))
-        self.assertEqual(self.app._parsear_observacion_perfil("NO FACTURABLE"), (None, False, True))
+        self.assertEqual(self.app._parsear_observacion_perfil("E Y F"), (None, True, False, False))
+        self.assertEqual(self.app._parsear_observacion_perfil("NO FACTURABLE"), (None, False, True, False))
         # El patrón real trae "SE FACTURA" en medio y un salto de línea.
         self.assertEqual(
             self.app._parsear_observacion_perfil("RECATEGORIZADO SE\nFACTURA COMO B4"),
-            ("B4", False, False),
+            ("B4", False, False, False),
         )
+
+    def test_24h_en_observaciones(self):
+        for valor in ("24", "24H", "24HRS", "24 HORAS", "JORNADA 24 HORAS"):
+            rec, ef, nf, es24 = self.app._parsear_observacion_perfil(valor)
+            self.assertTrue(es24, msg=repr(valor))
+        # Sin "24" -> es_24h False (no debe confundirse con otros textos).
+        self.assertFalse(self.app._parsear_observacion_perfil("RECATEGORIZADO SE FACTURA COMO B4")[3])
 
     def test_coexisten_en_cualquier_orden(self):
         # Recategorización + "E y F" juntos: no importa el orden.
         self.assertEqual(
             self.app._parsear_observacion_perfil("RECATEGORIZADO SE FACTURA COMO E11 E Y F"),
-            ("E11", True, False),
+            ("E11", True, False, False),
         )
         self.assertEqual(
             self.app._parsear_observacion_perfil("E Y F RECATEGORIZADO SE FACTURA COMO D7"),
-            ("D7", True, False),
+            ("D7", True, False, False),
         )
 
     def test_vacios_y_no_reconocidos(self):
         for valor in (None, "", "   ", "TRASLADO"):
-            self.assertEqual(self.app._parsear_observacion_perfil(valor), (None, False, False), msg=repr(valor))
+            self.assertEqual(
+                self.app._parsear_observacion_perfil(valor), (None, False, False, False), msg=repr(valor)
+            )
 
 
 if __name__ == "__main__":

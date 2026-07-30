@@ -313,35 +313,42 @@ class ServicesValidationApp:
     #   - Recategorización: "RECATEGORIZADO SE FACTURA COMO B4" -> nivel "B4".
     #   - "E Y F": aunque la jornada sea de 24 horas, cuenta como 1 unidad.
     #   - "NO FACTURABLE": la fila no se cuenta.
+    #   - "24"/"24H"/"24HRS"/"24 HORAS": jornada de 24 horas (cuenta 1/3).
     _RE_RECATEGORIZADO = re.compile(r"RECATEGORIZ\w*.*?\bCOMO\s+([A-Z]+\s?\d+)")
     _RE_EF = re.compile(r"\bE\s*Y\s*F\b")
+    # "24" no rodeado de otros dígitos: casa "24", "24H", "24HRS", "24 HORAS" y
+    # evita años (2024) u otros números que contengan 24.
+    _RE_24H = re.compile(r"(?<!\d)24(?!\d)")
 
     def _parsear_observacion_perfil(self, observacion):
         """Interpreta la columna 'Observaciones' de la planilla de perfiles.
 
-        Devuelve ``(recategorizado, es_ef, no_facturable)``:
+        Devuelve ``(recategorizado, es_ef, no_facturable, es_24h)``:
 
         - ``recategorizado`` – nivel al que se recategoriza (p. ej. ``"B4"``) o
           ``None`` si no hay recategorización.
         - ``es_ef`` – ``True`` si aparece el marcador **"E y F"**: el turno se
           cuenta como **1 unidad** aunque la jornada sea de 24 horas.
         - ``no_facturable`` – ``True`` si aparece **"NO FACTURABLE"**: no cuenta.
+        - ``es_24h`` – ``True`` si la observación indica jornada de **24 horas**
+          (``24``, ``24H``, ``24HRS``, ``24 HORAS``): el turno cuenta **1/3**.
 
-        Los tres son independientes: pueden coexistir y en cualquier orden.
+        Los marcadores son independientes: pueden coexistir y en cualquier orden.
         """
         if observacion is None:
-            return None, False, False
+            return None, False, False, False
         texto = unicodedata.normalize("NFKD", str(observacion)).encode("ascii", "ignore").decode()
         texto = texto.replace('"', " ").replace("'", " ")
         texto = re.sub(r"\s+", " ", texto).upper().strip()
         if not texto:
-            return None, False, False
+            return None, False, False, False
 
         no_facturable = "NO FACTURABLE" in texto
         es_ef = self._RE_EF.search(texto) is not None
+        es_24h = self._RE_24H.search(texto) is not None
         m = self._RE_RECATEGORIZADO.search(texto)
         recategorizado = re.sub(r"\s+", "", m.group(1)) if m else None
-        return recategorizado, es_ef, no_facturable
+        return recategorizado, es_ef, no_facturable, es_24h
 
     def _es_celda_vacia(self, valor):
         if valor is None:
@@ -539,9 +546,9 @@ class ServicesValidationApp:
                             )
                             continue
 
-                        # Interpretar Observaciones (recategorización, "E y F" y
-                        # "NO FACTURABLE", que pueden coexistir y en cualquier orden).
-                        recategorizado, es_ef, no_facturable = (
+                        # Interpretar Observaciones (recategorización, "E y F",
+                        # "NO FACTURABLE" y "24h", que pueden coexistir y en cualquier orden).
+                        recategorizado, es_ef, no_facturable, es_24h_obs = (
                             self._parsear_observacion_perfil(observacion)
                         )
                         if no_facturable:
@@ -556,8 +563,10 @@ class ServicesValidationApp:
                             # Otra observación no reconocida: comportamiento previo.
                             fuente = str(observacion).split()[-1]
 
-                        # 24 horas: 1/3 por persona, salvo "E y F" (cuenta como 1).
-                        cantidad = 1 / 3 if ("24" in tabla_info and not es_ef) else 1
+                        # 24 horas (al inicio de la hoja o en observaciones): 1/3 por
+                        # persona, salvo "E y F" (cuenta como 1).
+                        es_24h = ("24" in tabla_info) or es_24h_obs
+                        cantidad = 1 / 3 if (es_24h and not es_ef) else 1
                         if fuente:
                             conteo[self._normalizar_perfil(fuente)] += cantidad
                                              

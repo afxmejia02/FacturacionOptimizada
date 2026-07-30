@@ -129,8 +129,8 @@ def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
                             continue
 
                         # Interpretar la columna Observaciones (recategorización,
-                        # "E y F" y "NO FACTURABLE", que pueden coexistir).
-                        recategorizado, es_ef, no_facturable = (
+                        # "E y F", "NO FACTURABLE" y "24h", que pueden coexistir).
+                        recategorizado, es_ef, no_facturable, es_24h_obs = (
                             validator_obj._parsear_observacion_perfil(observacion)
                         )
                         if no_facturable:
@@ -150,9 +150,10 @@ def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
                         if not perfil_norm:
                             continue
 
-                        # 24 horas: 1/3 por persona, salvo el marcador "E y F" que
-                        # hace contar el turno como 1 unidad.
-                        cantidad = 1 / 3 if ("24" in tabla_info and not es_ef) else 1
+                        # 24 horas (al inicio de la hoja o en observaciones): 1/3 por
+                        # persona, salvo el marcador "E y F" (cuenta como 1 unidad).
+                        es_24h = ("24" in tabla_info) or es_24h_obs
+                        cantidad = 1 / 3 if (es_24h and not es_ef) else 1
                         registros.append(
                             {
                                 "FECHA": fecha_detectada,

@@ -49,12 +49,15 @@ que reutiliza la web:
 - `_normalizar_perfil`, `_normalizar_fecha`, `_normalizar_busqueda` – normalización
   de texto para que el cruce sea robusto a tildes, mayúsculas y formato.
 - `_parsear_observacion_perfil(obs)` – interpreta la columna **Observaciones** de
-  la planilla de perfiles y devuelve `(recategorizado, es_ef, no_facturable)`.
-  Los tres marcadores pueden coexistir y en cualquier orden:
+  la planilla de perfiles y devuelve `(recategorizado, es_ef, no_facturable, es_24h)`.
+  Los marcadores pueden coexistir y en cualquier orden:
   - `RECATEGORIZADO … COMO <nivel>` → el turno se cuenta en el nivel indicado.
   - `E y F` → aunque la jornada sea de **24 horas** (que normalmente cuenta 1/3),
     el turno se cuenta como **1 unidad**.
   - `NO FACTURABLE` → la fila **no cuenta**.
+  - `24` / `24H` / `24HRS` / `24 HORAS` → jornada de **24 horas**: el turno cuenta
+    **1/3**. La jornada de 24 h se detecta tanto al inicio de la hoja (`tabla[4][2]`)
+    como en esta columna de observaciones.
 
 Equipos y servicios (formato vigente) comparten estructura (etiqueta + detalle
 con `FECHA`/`CANTIDAD` por fila), por eso un único extractor por etiqueta sirve a
