@@ -126,5 +126,36 @@ class TestHistogramaPorSeccion(unittest.TestCase):
         self.assertEqual(gamma["VALOR"].iloc[0], 5)
 
 
+class TestObservacionPerfil(unittest.TestCase):
+    """Parseo de la columna Observaciones: recategorización + 'E y F' + 'NO FACTURABLE'."""
+
+    def setUp(self):
+        self.app = _app()
+
+    def test_marcadores_individuales(self):
+        self.assertEqual(self.app._parsear_observacion_perfil("E Y F"), (None, True, False))
+        self.assertEqual(self.app._parsear_observacion_perfil("NO FACTURABLE"), (None, False, True))
+        # El patrón real trae "SE FACTURA" en medio y un salto de línea.
+        self.assertEqual(
+            self.app._parsear_observacion_perfil("RECATEGORIZADO SE\nFACTURA COMO B4"),
+            ("B4", False, False),
+        )
+
+    def test_coexisten_en_cualquier_orden(self):
+        # Recategorización + "E y F" juntos: no importa el orden.
+        self.assertEqual(
+            self.app._parsear_observacion_perfil("RECATEGORIZADO SE FACTURA COMO E11 E Y F"),
+            ("E11", True, False),
+        )
+        self.assertEqual(
+            self.app._parsear_observacion_perfil("E Y F RECATEGORIZADO SE FACTURA COMO D7"),
+            ("D7", True, False),
+        )
+
+    def test_vacios_y_no_reconocidos(self):
+        for valor in (None, "", "   ", "TRASLADO"):
+            self.assertEqual(self.app._parsear_observacion_perfil(valor), (None, False, False), msg=repr(valor))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

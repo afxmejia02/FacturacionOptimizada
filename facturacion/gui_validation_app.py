@@ -307,6 +307,42 @@ class ServicesValidationApp:
         texto = texto.replace("Nivel", "").replace("Perfil", "")
         return texto.replace("/", "").strip()
 
+    # Marcadores de la columna "Observaciones" de la planilla de perfiles. Se
+    # buscan sobre el texto normalizado (mayúsculas, sin acentos, espacios
+    # colapsados) y pueden aparecer varios a la vez y en cualquier orden.
+    #   - Recategorización: "RECATEGORIZADO SE FACTURA COMO B4" -> nivel "B4".
+    #   - "E Y F": aunque la jornada sea de 24 horas, cuenta como 1 unidad.
+    #   - "NO FACTURABLE": la fila no se cuenta.
+    _RE_RECATEGORIZADO = re.compile(r"RECATEGORIZ\w*.*?\bCOMO\s+([A-Z]+\s?\d+)")
+    _RE_EF = re.compile(r"\bE\s*Y\s*F\b")
+
+    def _parsear_observacion_perfil(self, observacion):
+        """Interpreta la columna 'Observaciones' de la planilla de perfiles.
+
+        Devuelve ``(recategorizado, es_ef, no_facturable)``:
+
+        - ``recategorizado`` – nivel al que se recategoriza (p. ej. ``"B4"``) o
+          ``None`` si no hay recategorización.
+        - ``es_ef`` – ``True`` si aparece el marcador **"E y F"**: el turno se
+          cuenta como **1 unidad** aunque la jornada sea de 24 horas.
+        - ``no_facturable`` – ``True`` si aparece **"NO FACTURABLE"**: no cuenta.
+
+        Los tres son independientes: pueden coexistir y en cualquier orden.
+        """
+        if observacion is None:
+            return None, False, False
+        texto = unicodedata.normalize("NFKD", str(observacion)).encode("ascii", "ignore").decode()
+        texto = texto.replace('"', " ").replace("'", " ")
+        texto = re.sub(r"\s+", " ", texto).upper().strip()
+        if not texto:
+            return None, False, False
+
+        no_facturable = "NO FACTURABLE" in texto
+        es_ef = self._RE_EF.search(texto) is not None
+        m = self._RE_RECATEGORIZADO.search(texto)
+        recategorizado = re.sub(r"\s+", "", m.group(1)) if m else None
+        return recategorizado, es_ef, no_facturable
+
     def _es_celda_vacia(self, valor):
         if valor is None:
             return True
@@ -496,8 +532,6 @@ class ServicesValidationApp:
                         if "GLOBAL" in tabla_info_upper or "NO FACTURABLE" in tabla_info_upper:
                             continue
 
-                        cantidad = 1 / 3 if "24" in tabla_info else 1
-
                         celda_validacion = row[7] if len(row) > 7 else None
                         if self._es_celda_vacia(celda_validacion):
                             self._debug_print(
@@ -505,15 +539,27 @@ class ServicesValidationApp:
                             )
                             continue
 
-                        if isinstance(perfil, str) and self._es_celda_vacia(observacion):
-                            perfil = perfil.strip()
-                            if perfil:
-                                conteo[self._normalizar_perfil(perfil)] += cantidad
-                                
-                        if not self._es_celda_vacia(observacion):
-                            perfil = str(observacion).split()[-1]
-                            if perfil:
-                                conteo[self._normalizar_perfil(perfil)] += cantidad
+                        # Interpretar Observaciones (recategorización, "E y F" y
+                        # "NO FACTURABLE", que pueden coexistir y en cualquier orden).
+                        recategorizado, es_ef, no_facturable = (
+                            self._parsear_observacion_perfil(observacion)
+                        )
+                        if no_facturable:
+                            continue
+
+                        if recategorizado:
+                            fuente = recategorizado
+                        elif es_ef or self._es_celda_vacia(observacion):
+                            # "E y F" (o sin observación): el nivel es el de la columna.
+                            fuente = perfil.strip() if isinstance(perfil, str) else perfil
+                        else:
+                            # Otra observación no reconocida: comportamiento previo.
+                            fuente = str(observacion).split()[-1]
+
+                        # 24 horas: 1/3 por persona, salvo "E y F" (cuenta como 1).
+                        cantidad = 1 / 3 if ("24" in tabla_info and not es_ef) else 1
+                        if fuente:
+                            conteo[self._normalizar_perfil(fuente)] += cantidad
                                              
         return conteo, fecha_reporte
 

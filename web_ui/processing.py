@@ -128,19 +128,31 @@ def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
                         if "GLOBAL" in tabla_info_upper or "NO FACTURABLE" in tabla_info_upper:
                             continue
 
-                        if isinstance(perfil, str) and observacion == "":
-                            perfil = perfil.strip()
-                            if perfil:
-                                perfil_norm = validator_obj._normalizar_perfil(perfil)
-                        elif observacion != "":
-                            perfil = str(observacion).split()[-1]
-                            if perfil:
-                                perfil_norm = validator_obj._normalizar_perfil(perfil)
+                        # Interpretar la columna Observaciones (recategorización,
+                        # "E y F" y "NO FACTURABLE", que pueden coexistir).
+                        recategorizado, es_ef, no_facturable = (
+                            validator_obj._parsear_observacion_perfil(observacion)
+                        )
+                        if no_facturable:
+                            continue  # la observación indica que no se factura
+
+                        if recategorizado:
+                            fuente = recategorizado
+                        elif es_ef or observacion == "":
+                            # "E y F" (o sin observación): el nivel es el de la columna.
+                            fuente = perfil.strip() if isinstance(perfil, str) else perfil
+                        else:
+                            # Otra observación no reconocida: comportamiento previo.
+                            fuente = str(observacion).split()[-1]
+                        if fuente:
+                            perfil_norm = validator_obj._normalizar_perfil(fuente)
 
                         if not perfil_norm:
                             continue
 
-                        cantidad = 1 / 3 if "24" in tabla_info else 1
+                        # 24 horas: 1/3 por persona, salvo el marcador "E y F" que
+                        # hace contar el turno como 1 unidad.
+                        cantidad = 1 / 3 if ("24" in tabla_info and not es_ef) else 1
                         registros.append(
                             {
                                 "FECHA": fecha_detectada,
