@@ -181,9 +181,22 @@ def _extract_excel_perfiles_by_date(excel_path: str) -> pd.DataFrame:
         raise KeyError("El archivo Excel no contiene la columna 'DESCRIPCION TARIFA'.")
 
     df_niveles = df_hist[df_hist["DESCRIPCION TARIFA"].notna()].copy()
-    df_niveles = df_niveles[
-        df_niveles["DESCRIPCION TARIFA"].astype(str).str.contains("Nivel|Perfil", na=False)
-    ].copy()
+    # Perfiles = mano de obra (COD. TAR. 5.1 y 5.4). Se exige un código de tarifa
+    # real que empiece por "5." y se excluyen equipos (5.5) y servicios (5.6).
+    # Exigir el código descarta filas sin tarifa (encabezados, firmas de pie de
+    # página como "Vo.Bo. Lider…" o nombres) e incluye tarifas de mano de obra que
+    # no dicen "Nivel/Perfil" (p. ej. "Inspector certificado: API/ASME NACIONAL").
+    col_cod = validator_obj._col_codigo_tarifa(df_niveles)
+    if col_cod is not None:
+        cods = df_niveles[col_cod].astype(str).str.strip()
+        es_perfil = cods.str.startswith("5.") & ~(
+            cods.str.startswith("5.5") | cods.str.startswith("5.6")
+        )
+        df_niveles = df_niveles[es_perfil].copy()
+    else:
+        df_niveles = df_niveles[
+            df_niveles["DESCRIPCION TARIFA"].astype(str).str.contains("Nivel|Perfil", na=False)
+        ].copy()
 
     import datetime as _dt
 
@@ -198,6 +211,7 @@ def _extract_excel_perfiles_by_date(excel_path: str) -> pd.DataFrame:
         id_vars=cols_id, value_vars=cols_fecha, var_name="FECHA", value_name="VALOR"
     )
     df_largo["FECHA"] = pd.to_datetime(df_largo["FECHA"], errors="coerce").dt.normalize()
+    df_largo["VALOR"] = pd.to_numeric(df_largo["VALOR"], errors="coerce")
     df_largo = df_largo[df_largo["VALOR"].notna()].copy()
     df_largo = df_largo[df_largo["VALOR"] != 0].copy()
     df_largo["PERFIL_NORM"] = df_largo["DESCRIPCION TARIFA"].apply(validator_obj._normalizar_perfil)

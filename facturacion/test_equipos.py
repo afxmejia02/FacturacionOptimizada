@@ -126,6 +126,29 @@ class TestHistogramaPorSeccion(unittest.TestCase):
         self.assertEqual(gamma["VALOR"].iloc[0], 5)
 
 
+class TestParsearCantidad(unittest.TestCase):
+    """La cantidad de la planilla admite miles/decimales en cualquier convención."""
+
+    def setUp(self):
+        self.app = _app()
+
+    def test_coma_decimal_sin_separador_de_miles(self):
+        # Regresión: "1452,6" daba 145 (se tomaban solo 3 dígitos).
+        self.assertEqual(self.app._parsear_cantidad("1452,6"), 1452.6)
+        self.assertEqual(self.app._parsear_cantidad("1452"), 1452.0)
+
+    def test_ambas_convenciones(self):
+        self.assertEqual(self.app._parsear_cantidad("1.452,6"), 1452.6)   # colombiana
+        self.assertEqual(self.app._parsear_cantidad("1,452.6"), 1452.6)   # anglosajona
+        self.assertEqual(self.app._parsear_cantidad("1.452.678"), 1452678.0)
+        self.assertEqual(self.app._parsear_cantidad("0,33"), 0.33)
+        self.assertEqual(self.app._parsear_cantidad("3"), 3.0)
+
+    def test_vacios(self):
+        self.assertIsNone(self.app._parsear_cantidad(None))
+        self.assertIsNone(self.app._parsear_cantidad("---"))
+
+
 class TestObservacionPerfil(unittest.TestCase):
     """Parseo de la columna Observaciones: recategorización + 'E y F' + 'NO FACTURABLE'."""
 

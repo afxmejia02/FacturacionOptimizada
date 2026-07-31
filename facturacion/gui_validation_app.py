@@ -427,15 +427,38 @@ class ServicesValidationApp:
         return None
 
     def _parsear_cantidad(self, valor):
+        """Convierte la cantidad de una planilla a ``float``.
+
+        Tolera separadores de miles y decimales en cualquier convención:
+        ``1.452,6`` y ``1452,6`` (colombiana) y ``1,452.6`` / ``1452.6``.
+        El bug anterior: el patrón ``\\d{1,3}(?:\\.\\d{3})*`` tomaba solo los tres
+        primeros dígitos cuando no había separador de miles (``1452,6`` -> ``145``).
+        """
         if valor is None:
             return None
 
-        match = re.search(r"\d{1,3}(?:\.\d{3})*(?:,\d+)?|\d+(?:[.,]\d+)?", str(valor))
+        # Primer token numérico (dígitos con . o , internos).
+        match = re.search(r"\d[\d.,]*\d|\d", str(valor))
         if not match:
             return None
+        token = match.group()
+
+        tiene_punto = "." in token
+        tiene_coma = "," in token
+        if tiene_punto and tiene_coma:
+            # El separador que aparece de último es el decimal; el otro, de miles.
+            if token.rfind(",") > token.rfind("."):
+                token = token.replace(".", "").replace(",", ".")   # 1.452,6 -> 1452.6
+            else:
+                token = token.replace(",", "")                     # 1,452.6 -> 1452.6
+        elif tiene_coma:
+            # Solo comas: una es decimal (colombiana); varias son de miles.
+            token = token.replace(",", "") if token.count(",") > 1 else token.replace(",", ".")
+        elif token.count(".") > 1:
+            token = token.replace(".", "")                          # varios puntos = miles
 
         try:
-            return float(match.group().replace(".", "").replace(",", "."))
+            return float(token)
         except ValueError:
             return None
 

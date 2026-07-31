@@ -22,6 +22,12 @@ SERVICIOS TÍPICOS” → `5.6`) y solo se cruza esa sección. Una tarifa que es
 Excel con **valor 0** y sin registro en el PDF se considera válida (no se muestra);
 una con valor > 0 ausente del PDF se marca como diferencia.
 
+En **perfiles**, el lado Excel se toma como “todo lo que **no** es equipos ni
+servicios”: se excluyen los `COD. TAR.` `5.5` y `5.6` (en vez de exigir que la
+descripción diga “Nivel/Perfil”), de modo que también entran tarifas de mano de
+obra sin esa palabra (p. ej. `Inspector certificado: API/ASME NACIONAL`, COD `5.4`)
+y aparecen como diferencia cuando están en el Excel pero no en el PDF.
+
 ## Componente principal
 
 `gui_validation_app.py` define la clase **`ServicesValidationApp`**. Métodos clave
@@ -48,6 +54,9 @@ que reutiliza la web:
   arrastran tras el `)` (p. ej. `… (24 H) Motoso`).
 - `_normalizar_perfil`, `_normalizar_fecha`, `_normalizar_busqueda` – normalización
   de texto para que el cruce sea robusto a tildes, mayúsculas y formato.
+- `_parsear_cantidad(valor)` – convierte la cantidad de la planilla a número,
+  tolerando separadores de miles/decimales en cualquier convención (`1.452,6`,
+  `1452,6`, `1,452.6`, `1452.6` → `1452.6`).
 - `_parsear_observacion_perfil(obs)` – interpreta la columna **Observaciones** de
   la planilla de perfiles y devuelve `(recategorizado, es_ef, no_facturable, es_24h)`.
   Los marcadores pueden coexistir y en cualquier orden:
