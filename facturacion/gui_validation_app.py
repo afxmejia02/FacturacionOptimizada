@@ -239,20 +239,24 @@ class ServicesValidationApp:
 
         Algunos PDFs arrastran texto duplicado/superpuesto **después** del
         nombre real (p. ej. ``"MOTOSOLDADOR ... (24 H) Motoso"``: el ``Motoso``
-        es un fragmento espurio de un texto que se superpone). Los nombres de
-        equipo en este formato terminan en un marcador de horas entre paréntesis
-        (``(10 H)``, ``(24 H)``, ``(10 HORAS)``); por eso, si hay un ``)`` y
-        sobra texto después del último, se descarta ese sobrante.
-
-        Si no hay paréntesis (p. ej. ``KIT DE EQUIPOS PARA RESCATISTAS``) se deja
-        el nombre tal cual.
+        es un fragmento espurio —el inicio del propio nombre— de un texto que se
+        superpone). Ese sobrante se descarta **solo si es un fragmento inicial
+        duplicado del nombre**; una continuación legítima tras un paréntesis
+        (p. ej. ``"Torno ... (Diurno / Nocturno) para bridas >4 NPS <= 48 NPS"``)
+        **se conserva íntegra** para no suprimir información que sí está en el PDF
+        y coincide con el Excel.
         """
         limpio = self._normalizar_texto_equipo(texto)
         if not isinstance(limpio, str):
             return limpio
         idx = limpio.rfind(")")
-        if idx != -1 and limpio[idx + 1:].strip():
-            limpio = limpio[: idx + 1].strip()
+        if idx != -1:
+            base = limpio[: idx + 1].strip()
+            cola = limpio[idx + 1:].strip()
+            # Solo se recorta si la cola es un duplicado del inicio del nombre.
+            cola_norm = self._clave_equipo(cola)
+            if cola_norm and self._clave_equipo(base).startswith(cola_norm):
+                limpio = base
         return limpio
 
     def _clave_equipo(self, texto):
@@ -314,7 +318,9 @@ class ServicesValidationApp:
     #   - "E Y F": aunque la jornada sea de 24 horas, cuenta como 1 unidad.
     #   - "NO FACTURABLE": la fila no se cuenta.
     #   - "24"/"24H"/"24HRS"/"24 HORAS": jornada de 24 horas (cuenta 1/3).
-    _RE_RECATEGORIZADO = re.compile(r"RECATEGORIZ\w*.*?\bCOMO\s+([A-Z]+\s?\d+)")
+    # Tras "RECATEGORIZ… COMO" puede haber ruido antes del nivel ("COMO NIVEL B4",
+    # "COMO PERFIL C6"); se captura el primer nivel (1-3 letras + dígitos).
+    _RE_RECATEGORIZADO = re.compile(r"RECATEGORIZ\w*.*?\bCOMO\b.*?([A-Z]{1,3}\s*\d+)")
     _RE_EF = re.compile(r"\bE\s*Y\s*F\b")
     # "24" no rodeado de otros dígitos: casa "24", "24H", "24HRS", "24 HORAS" y
     # evita años (2024) u otros números que contengan 24.
@@ -429,10 +435,10 @@ class ServicesValidationApp:
     def _parsear_cantidad(self, valor):
         """Convierte la cantidad de una planilla a ``float``.
 
-        Tolera separadores de miles y decimales en cualquier convención:
-        ``1.452,6`` y ``1452,6`` (colombiana) y ``1,452.6`` / ``1452.6``.
-        El bug anterior: el patrón ``\\d{1,3}(?:\\.\\d{3})*`` tomaba solo los tres
-        primeros dígitos cuando no había separador de miles (``1452,6`` -> ``145``).
+        Convención **colombiana** (la que usan tanto el PDF como el Excel): el
+        **punto es separador de miles** y la **coma es el separador decimal**.
+        Ejemplos: ``3.139`` -> 3139, ``3.139,00`` -> 3139, ``1.452,6`` -> 1452.6,
+        ``153,67`` -> 153.67, ``7,7`` -> 7.7.
         """
         if valor is None:
             return None
@@ -441,21 +447,8 @@ class ServicesValidationApp:
         match = re.search(r"\d[\d.,]*\d|\d", str(valor))
         if not match:
             return None
-        token = match.group()
-
-        tiene_punto = "." in token
-        tiene_coma = "," in token
-        if tiene_punto and tiene_coma:
-            # El separador que aparece de último es el decimal; el otro, de miles.
-            if token.rfind(",") > token.rfind("."):
-                token = token.replace(".", "").replace(",", ".")   # 1.452,6 -> 1452.6
-            else:
-                token = token.replace(",", "")                     # 1,452.6 -> 1452.6
-        elif tiene_coma:
-            # Solo comas: una es decimal (colombiana); varias son de miles.
-            token = token.replace(",", "") if token.count(",") > 1 else token.replace(",", ".")
-        elif token.count(".") > 1:
-            token = token.replace(".", "")                          # varios puntos = miles
+        # Punto = miles (se elimina); coma = decimal (se vuelve punto).
+        token = match.group().replace(".", "").replace(",", ".")
 
         try:
             return float(token)

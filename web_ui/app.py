@@ -21,7 +21,7 @@ import streamlit.components.v1 as components
 from excel_export import build_results_excel
 from pdf_export import build_results_pdf
 from processing import process_mano_obra, process_pagos, process_reconciliation
-from rendering import build_colored_table
+from rendering import build_colored_table, format_number_co
 
 TOOL_LABELS = {
     "pagos": "Pagos Perfiles, Servicios y Equipos",
@@ -381,7 +381,15 @@ def _render_pagos_results() -> None:
             if selected_tipo != "Todos":
                 df_pagos = df_pagos[df_pagos[columna_tipo].astype(str) == selected_tipo].copy()
 
-    st.markdown(build_colored_table(df_pagos), unsafe_allow_html=True)
+    # Columnas PDF/Excel en formato colombiano (punto de miles, coma decimal).
+    def _formato_co(df):
+        out = df.copy()
+        for col in ("PDF", "Excel"):
+            if col in out.columns:
+                out[col] = out[col].map(format_number_co)
+        return out
+
+    st.markdown(build_colored_table(_formato_co(df_pagos)), unsafe_allow_html=True)
 
     tipo = st.session_state.get("pagos_result_tipo") or "pagos"
     _render_export_buttons(
@@ -389,7 +397,7 @@ def _render_pagos_results() -> None:
         default_name=f"resultado_{tipo}",
         titulo=f"Validación de {tipo}",
         archivos=st.session_state.get("pagos_files"),
-        secciones=[("", df_full)],  # el PDF incluye todas las fechas, no solo la filtrada
+        secciones=[("", _formato_co(df_full))],  # el PDF incluye todas las fechas, no solo la filtrada
     )
 
 

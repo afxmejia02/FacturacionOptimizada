@@ -61,6 +61,18 @@ class TestExtraerValorEtiqueta(unittest.TestCase):
         valor = self.app._extraer_valor_etiqueta([[row]], ETIQUETAS)
         self.assertEqual(valor, "MOTOSOLDADOR HASTA 400 AMP (24 H)")
 
+    def test_conserva_texto_tras_parentesis_si_es_continuacion(self):
+        # "para bridas..." es continuación legítima del nombre: NO debe recortarse.
+        nombre = "Torno portátil orbital 10H (Diurno / Nocturno) para bridas >4 NPS <=\n48 NPS"
+        limpio = self.app._limpiar_nombre_equipo(nombre)
+        self.assertIn("para bridas", limpio)
+        self.assertIn("48 NPS", limpio)
+
+    def test_recorta_fragmento_inicial_duplicado(self):
+        # "Motoso" es el inicio duplicado del propio nombre (artefacto): se recorta.
+        limpio = self.app._limpiar_nombre_equipo("MOTOSOLDADOR HASTA 400 AMP (24 H) Motoso")
+        self.assertEqual(limpio, "MOTOSOLDADOR HASTA 400 AMP (24 H)")
+
     def test_sin_etiqueta_devuelve_none(self):
         row = ["EMPRESA:", "Consorcio Tabarca", "ORDEN DE SERVICIO No 058"]
         self.assertIsNone(self.app._extraer_valor_etiqueta([[row]], ETIQUETAS))
@@ -149,6 +161,24 @@ class TestParsearCantidad(unittest.TestCase):
         self.assertIsNone(self.app._parsear_cantidad("---"))
 
 
+class TestParsearCantidad(unittest.TestCase):
+    """Cantidades de planilla: miles/decimales en distintas convenciones."""
+
+    def setUp(self):
+        self.app = _app()
+
+    def test_convencion_colombiana(self):
+        # Punto = miles, coma = decimal (misma convención en PDF y Excel).
+        self.assertEqual(self.app._parsear_cantidad("3.139 m³"), 3139.0)
+        self.assertEqual(self.app._parsear_cantidad("3.139,00"), 3139.0)
+        self.assertEqual(self.app._parsear_cantidad("1.452,6"), 1452.6)
+        self.assertEqual(self.app._parsear_cantidad("153,67 Kg"), 153.67)
+        self.assertEqual(self.app._parsear_cantidad("7,7 m³"), 7.7)
+        self.assertEqual(self.app._parsear_cantidad("1.452.678"), 1452678.0)
+        self.assertEqual(self.app._parsear_cantidad("3"), 3.0)
+        self.assertIsNone(self.app._parsear_cantidad("---"))
+
+
 class TestObservacionPerfil(unittest.TestCase):
     """Parseo de la columna Observaciones: recategorización + 'E y F' + 'NO FACTURABLE'."""
 
@@ -181,6 +211,19 @@ class TestObservacionPerfil(unittest.TestCase):
             self.app._parsear_observacion_perfil("E Y F RECATEGORIZADO SE FACTURA COMO D7"),
             ("D7", True, False, False),
         )
+
+    def test_caso_real_recat_mas_ef_con_guion(self):
+        # Caso real ("13. Registro PLanillas" p.21): recat + "- E Y F" con salto de
+        # línea. Debe dar el nivel recategorizado y es_ef=True (cuenta 1, no 1/3).
+        self.assertEqual(
+            self.app._parsear_observacion_perfil("RECATEGORIZADO\nSE FACTURA COMO B4 - E Y F"),
+            ("B4", True, False, False),
+        )
+
+    def test_recat_con_ruido_antes_del_nivel(self):
+        # Robustez: "COMO NIVEL/PERFIL <nivel>" (palabra extra antes del nivel).
+        self.assertEqual(self.app._parsear_observacion_perfil("RECATEGORIZADO COMO NIVEL B4")[0], "B4")
+        self.assertEqual(self.app._parsear_observacion_perfil("RECATEGORIZADO COMO PERFIL C6 - E Y F")[0], "C6")
 
     def test_vacios_y_no_reconocidos(self):
         for valor in (None, "", "   ", "TRASLADO"):

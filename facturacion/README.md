@@ -50,8 +50,17 @@ que reutiliza la web:
 - `_extraer_valor_etiqueta` / `_limpiar_nombre_equipo` – leen el nombre del
   equipo/servicio de la etiqueta `EQUIPO:` / `SERVICIO:`. Exigen que la celda
   **sea** la etiqueta (no que la contenga, para no confundir la palabra
-  “EQUIPOS” de un texto largo) y descartan texto duplicado que algunos PDFs
-  arrastran tras el `)` (p. ej. `… (24 H) Motoso`).
+  “EQUIPOS” de un texto largo). El texto que sobra tras el último `)` se descarta
+  **solo si es un fragmento inicial duplicado del propio nombre** (artefacto de
+  superposición, p. ej. `… (24 H) Motoso`); una continuación legítima como
+  `Torno … (Diurno / Nocturno) para bridas >4 NPS <= 48 NPS` **se conserva** para
+  no suprimir información que sí coincide con el Excel.
+- `_parsear_cantidad` – convierte la cantidad de una planilla a número con la
+  **convención colombiana** (la que usan tanto el PDF como el Excel): el **punto
+  es separador de miles** y la **coma es el separador decimal**
+  (`3.139` → 3139, `3.139,00` → 3139, `1.452,6` → 1452.6, `153,67` → 153.67,
+  `7,7` → 7.7). Los resultados se muestran/exportan en ese mismo formato
+  (`format_number_co`).
 - `_normalizar_perfil`, `_normalizar_fecha`, `_normalizar_busqueda` – normalización
   de texto para que el cruce sea robusto a tildes, mayúsculas y formato.
 - `_parsear_cantidad(valor)` – convierte la cantidad de la planilla a número,

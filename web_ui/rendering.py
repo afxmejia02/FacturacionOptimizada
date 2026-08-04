@@ -132,6 +132,29 @@ def format_count(value):
         return value
 
 
+def format_number_co(value):
+    """Formatea un número al estilo colombiano: punto de miles, coma decimal.
+
+    Ej.: ``3139`` -> ``"3.139"``; ``1452.6`` -> ``"1.452,6"``; ``153.67`` ->
+    ``"153,67"``; ``0`` -> ``"0"``. Cadenas vacías/None -> ``""``.
+    """
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+    # Formato anglosajón (coma miles, punto decimal) y luego se intercambian.
+    texto = f"{num:,.6f}".rstrip("0").rstrip(".")
+    return texto.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
 def normalize_list_like(value) -> str:
     """Turn a scalar or list-like of numbers into a space-separated string."""
     if value is None:

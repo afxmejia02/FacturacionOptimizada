@@ -38,7 +38,9 @@ def _debug_print(message: str) -> None:
 
 def _new_validator():
     """Instantiate the validator without running its tkinter ``__init__``."""
-    return validator.ServicesValidationApp.__new__(validator.ServicesValidationApp)
+    obj = validator.ServicesValidationApp.__new__(validator.ServicesValidationApp)
+    obj.debug_mode = False  # métodos como _es_celda_vacia lo consultan
+    return obj
 
 
 def load_payroll_module():
@@ -138,9 +140,10 @@ def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
 
                         if recategorizado:
                             fuente = recategorizado
-                        elif es_ef or es_24h_obs or observacion == "":
-                            # "E y F", "24 horas" o sin observación: el nivel es el
-                            # de la columna (no la última palabra de la observación).
+                        elif es_ef or es_24h_obs or validator_obj._es_celda_vacia(observacion):
+                            # "E y F", "24 horas" o sin observación (celda vacía,
+                            # incluida None/espacios): el nivel es el de la columna,
+                            # no la última palabra de la observación.
                             fuente = perfil.strip() if isinstance(perfil, str) else perfil
                         else:
                             # Otra observación no reconocida: comportamiento previo.
