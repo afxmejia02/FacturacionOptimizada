@@ -24,3 +24,7 @@ docs/
 *.pem
 secrets.yaml
 .env
+
+#Notebooks
+*.ipynb_checkpoints
+*.ipynb
