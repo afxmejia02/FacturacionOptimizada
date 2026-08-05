@@ -21,7 +21,11 @@ no se emite una columna de estado/observaciones: el resaltado por celda es el
 
 Notas de formato del Informe:
 
-- el encabezado real está en la fila 10 (índice 9),
+- el encabezado real no siempre está en la misma fila (varía entre exportes
+  mensuales, p. ej. fila 10 unos meses y fila 7 otros), así que se **detecta**
+  buscando la primera fila que trae a la vez una columna de identificación y
+  "Nombres" (ver ``_detectar_fila_encabezado_informe``), igual que ya se hace
+  para el Informe ITALCO,
 - las columnas usadas se localizan **por nombre** (normalizado: mayúsculas, sin
   acentos y espacios colapsados, con alias por si el nombre cambia), porque el
   layout del Informe varía entre exportes mensuales (distinto número y orden de
@@ -46,7 +50,7 @@ import unicodedata
 import pandas as pd
 
 INFORME_SHEET = "Informe"
-INFORME_HEADER_ROW = 9  # el encabezado real está en la fila 10 (índice 9)
+INFORME_HEADER_ROW = 9  # respaldo si no se detecta el encabezado (ver _detectar_fila_encabezado_informe)
 
 # Columnas del Informe usadas, localizadas por NOMBRE (no por posición, que varía
 # entre exportes). Para cada nombre interno se listan los alias aceptados; se
@@ -402,14 +406,42 @@ def _coinciden(val_inf, val_ods, tipo) -> bool:
     return _comparable(val_inf, tipo) == _comparable(val_ods, tipo)
 
 
+def _detectar_fila_encabezado_informe(xls: pd.ExcelFile, max_filas: int = 25) -> int:
+    """Detecta la fila del encabezado real de la hoja 'Informe'.
+
+    El número de filas de título antes del encabezado varía entre exportes
+    mensuales (p. ej. fila 10 unos meses, fila 7 otros), así que en vez de
+    asumir una posición fija se busca la primera fila que trae a la vez una
+    columna de identificación (alias de ``Identificacion``) y ``Nombres``,
+    igual que ``leer_informe_italco`` ya hace para el Informe ITALCO. Si no se
+    encuentra (formato inesperado), cae al valor histórico ``INFORME_HEADER_ROW``.
+    """
+    crudo = xls.parse(INFORME_SHEET, header=None, nrows=max_filas)
+    alias_doc = {norm_texto(a) for a in INFORME_COLUMNAS["Identificacion"]}
+    alias_nombres = {norm_texto(a) for a in INFORME_COLUMNAS["Nombres"]}
+    for i in range(len(crudo)):
+        celdas = {norm_texto(v) for v in crudo.iloc[i].tolist()}
+        if celdas & alias_doc and celdas & alias_nombres:
+            return i
+    return INFORME_HEADER_ROW
+
+
 def leer_informe(source) -> pd.DataFrame:
     """Lee la hoja 'Informe', localiza las columnas usadas por nombre y deriva la OS.
 
-    Las columnas se buscan por nombre normalizado (con alias), no por posición,
-    porque el layout varía entre exportes mensuales. Una columna que no aparezca
+    La fila de encabezado se detecta dinámicamente (ver
+    ``_detectar_fila_encabezado_informe``) porque varía entre exportes
+    mensuales. Las columnas se buscan por nombre normalizado (con alias), no
+    por posición, porque el layout también varía. Una columna que no aparezca
     simplemente no se renombra y queda ausente del resultado.
     """
-    df = pd.read_excel(source, sheet_name=INFORME_SHEET, header=INFORME_HEADER_ROW)
+    # Se cierra explícitamente (``with``): ``pd.ExcelFile`` mantiene el archivo
+    # abierto hasta que se cierra o se recolecta la basura, y en Windows un
+    # archivo con el handle abierto no se puede borrar (el ``TemporaryDirectory``
+    # del llamador falla con "WinError 32" al limpiar si no se cierra aquí).
+    with pd.ExcelFile(source) as xls:
+        fila_encabezado = _detectar_fila_encabezado_informe(xls)
+        df = xls.parse(INFORME_SHEET, header=fila_encabezado)
 
     # nombre_normalizado -> nombre real (primera aparición gana).
     por_norm: dict[str, object] = {}
