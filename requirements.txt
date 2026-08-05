@@ -6,3 +6,9 @@ pandas>=1.3.0          # Data manipulation and analysis
 pdfplumber>=0.7.0      # PDF text extraction
 openpyxl>=3.1.0        # Excel read/write and styling
 reportlab>=4.0.0       # PDF export of results
+
+# starlette 1.4.0 volvio obligatorio el argumento keyword-only
+# "thread_minimum_size" en GZipResponder.__init__, y la subclase
+# _MediaAwareGZipResponder de Streamlit no lo pasa (TypeError en cada request ->
+# 500). Streamlit lo declara sin cota superior, asi que se fija aqui.
+starlette<1.4
