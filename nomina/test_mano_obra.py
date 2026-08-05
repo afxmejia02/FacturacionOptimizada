@@ -94,12 +94,16 @@ def _ods_xlsx(filas):
     return buffer
 
 
-def _informe_italco_xlsx(filas):
+def _informe_italco_xlsx(filas, columna_os=False):
     """Crea un Informe ITALCO (progresión) en memoria.
 
     El encabezado real no es la primera fila (hay filas de título arriba) y la
     primera columna no tiene nombre: marca ACTUAL / ANTERIOR / DIFERENCIA. Por
     cada persona se emiten las tres filas; solo la de DIFERENCIA debe usarse.
+
+    ``columna_os`` reproduce el otro layout visto en producción: en vez de
+    ``Perfil Contable`` con el texto ``BCA OS 37 CONVENCIONAL``, el exporte trae
+    una columna ``OS`` con el número suelto (y numérico, o sea float).
     """
     titulos = [
         [None, "Union temporal Italco"],
@@ -108,18 +112,20 @@ def _informe_italco_xlsx(filas):
     ]
     header = [
         None, "Mes", "Documento", "Nombre Completo", "Tipo de Contrato",
-        "Fecha de Inicio", "Fecha retiro", "Perfil Contable", "Cargo", "Sueldo Base",
+        "Fecha de Inicio", "Fecha retiro", "OS" if columna_os else "Perfil Contable",
+        "Cargo", "Sueldo Base",
     ]
     datos = []
     for f in filas:
         # El Sueldo Base solo importa en la fila ACTUAL (de ahí sale el salario
         # diario); en ANTERIOR/DIFERENCIA se pone un delta cualquiera.
         sueldo = {"ACTUAL": f.get("sueldo_base_actual"), "ANTERIOR": 0, "DIFERENCIA": 123}
+        os_valor = f.get("os_num", 37.0) if columna_os else f.get("perfil", "BCA OS 37 CONVENCIONAL")
         for marca in ("ACTUAL", "ANTERIOR", "DIFERENCIA"):
             datos.append([
                 marca, "2025 7", f["doc"], f.get("nombre", "JUAN PEREZ"),
                 "ECP R", f.get("fecha_inicio"), f.get("fecha_retiro"),
-                f.get("perfil", "BCA OS 37 CONVENCIONAL"), f.get("cargo", "OBRERO A"),
+                os_valor, f.get("cargo", "OBRERO A"),
                 sueldo[marca],
             ])
     matriz = titulos + [header] + datos
@@ -145,6 +151,27 @@ class TestNormalizarMoneda(unittest.TestCase):
     def test_vacios_e_invalidos(self):
         for valor in (None, float("nan"), "", "   ", "abc", True, False):
             self.assertIsNone(mo.normalizar_moneda(valor), msg=repr(valor))
+
+
+class TestSoloDigitos(unittest.TestCase):
+    """Regresión: documentos que Excel entrega como número no deben ganar un 0."""
+
+    def test_float_entero_no_arrastra_el_decimal(self):
+        # str(1096198448.0) == "1096198448.0"; quitar el punto pegaría el 0 final.
+        self.assertEqual(mo.solo_digitos(1096198448.0), "1096198448")
+        self.assertEqual(mo.solo_digitos(91517631.0), "91517631")
+
+    def test_texto_con_separadores_de_miles(self):
+        self.assertEqual(mo.solo_digitos("1.096.216.566"), "1096216566")
+        self.assertEqual(mo.solo_digitos("91.499.442"), "91499442")
+
+    def test_float_y_texto_del_mismo_documento_coinciden(self):
+        # Informe (número) y ODS (texto) deben reducirse al mismo documento.
+        self.assertEqual(mo.solo_digitos(1096216566.0), mo.solo_digitos("1.096.216.566"))
+
+    def test_enteros_y_vacios(self):
+        self.assertEqual(mo.solo_digitos(91499442), "91499442")
+        self.assertEqual(mo.solo_digitos(""), "")
 
 
 class TestFormatearCop(unittest.TestCase):
@@ -314,6 +341,13 @@ class TestOsComparable(unittest.TestCase):
         self.assertEqual(mo._os_comparable(None), "")
         self.assertEqual(mo._os_comparable("SIN NUMERO"), "")
 
+    def test_numero_suelto_como_float(self):
+        # Exportes con columna "OS" numérica: str(37.0) == "37.0" y, al tomar el
+        # último grupo de dígitos, devolvería "0" en vez de "37".
+        self.assertEqual(mo._os_comparable(37.0), "37")
+        self.assertEqual(mo._os_comparable(37), "37")
+        self.assertEqual(mo._os_comparable(37.0), mo._os_comparable("0DS37"))
+
 
 class TestNormCargo(unittest.TestCase):
     def test_ignora_marcador_progresion(self):
@@ -426,6 +460,36 @@ class TestCompararManoObraItalco(unittest.TestCase):
         self.assertEqual(fila["Nombre Completo"], ["PEDRO GOMEZ", ""])
         self.assertEqual(fila["Cargo"], ["OBRERO A", ""])
         self.assertEqual(fila["Fecha Inicio"], ["2025-07-01", ""])
+
+    def test_documento_numerico_cruza_contra_ods_en_texto(self):
+        # Regresión: el Informe trae el documento como número (float, por algún
+        # vacío en la columna) y la ODS como texto con puntos de miles. Si no se
+        # normaliza el float, el documento gana un 0 final y no cruza nadie.
+        informe = _informe_italco_xlsx([{
+            "doc": 1096198448.0,
+            "nombre": "BRIAN MADERA",
+            "cargo": "RESCATISTA B3",
+        }])
+        ods = _ods_xlsx([{
+            "doc": "1.096.198.448",
+            "nombres": "BRIAN",
+            "apellidos": "MADERA",
+            "cargo": "RESCATISTA B3",
+        }])
+        df = mo.comparar_mano_obra(informe, ods, formato="italco")
+
+        self.assertEqual(list(df[mo.COL_DOCUMENTO]), ["1096198448"])
+        # Cruzó: el nombre y el cargo coinciden -> un solo elemento.
+        self.assertEqual(df.iloc[0]["Nombre Completo"], ["BRIAN MADERA"])
+        self.assertEqual(df.iloc[0]["Cargo"], ["RESCATISTA B3"])
+
+    def test_informe_con_columna_os_numerica(self):
+        # Otro layout: la OS viene como columna "OS" numérica (37.0) en vez de
+        # dentro del "Perfil Contable". Debe cruzar contra el "0DS37" de la ODS.
+        informe = _informe_italco_xlsx([{"doc": "91449953"}], columna_os=True)
+        ods = _ods_xlsx([{"doc": "91449953", "os": "0DS37"}])
+        df = mo.comparar_mano_obra(informe, ods, formato="italco")
+        self.assertEqual(df.iloc[0]["OS"], ["37"])
 
     def test_tabarca_tambien_incluye_no_cruzados(self):
         # TABARCA también lista a quien está en el Informe pero no en la ODS.

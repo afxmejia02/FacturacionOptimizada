@@ -1,46 +1,12 @@
-"""Comparación de mano de obra: Informe de Costo vs registro de la ODS.
+"""Mano de obra: cruza el Informe de Costo contra el registro de la ODS.
 
-Ambos Excel traen la misma información bajo nombres de columna distintos. Este
-módulo cruza a las personas por número de documento y, por cada campo
-equivalente, indica si los valores coinciden o difieren.
+Los dos Excel traen la misma informacion con nombres de columna distintos. Se
+cruza por documento y, por cada campo equivalente, la celda resultante es una
+lista: ``[valor]`` si coinciden, ``[informe, ods]`` si difieren (eso es lo que
+la web resalta).
 
-Es la lógica de **producción** que consume la app web (``web_ui``). El notebook
-``mano-obra.ipynb`` es la versión de exploración equivalente.
-
-Modelo de datos del resultado (``comparar_mano_obra``):
-
-- una fila por persona cruzada (presente en ambos archivos),
-- columna ``Documento`` (solo dígitos),
-- una columna por cada campo del ``MAPEO_COLUMNAS``, cuyo valor es una **lista**:
-  ``[valor]`` si ambos coinciden, ``[valor_informe, valor_ods]`` si difieren.
-
-Las listas son la única fuente de verdad: una celda con dos elementos es una
-inconsistencia, y eso es lo que la web y el PDF resaltan a nivel de celda. (Ya
-no se emite una columna de estado/observaciones: el resaltado por celda es el
-único indicador de inconsistencia.)
-
-Notas de formato del Informe:
-
-- el encabezado real no siempre está en la misma fila (varía entre exportes
-  mensuales, p. ej. fila 10 unos meses y fila 7 otros), así que se **detecta**
-  buscando la primera fila que trae a la vez una columna de identificación y
-  "Nombres" (ver ``_detectar_fila_encabezado_informe``), igual que ya se hace
-  para el Informe ITALCO,
-- las columnas usadas se localizan **por nombre** (normalizado: mayúsculas, sin
-  acentos y espacios colapsados, con alias por si el nombre cambia), porque el
-  layout del Informe varía entre exportes mensuales (distinto número y orden de
-  columnas). Si una columna requerida no existe en ese archivo, el campo queda
-  **vacío** en vez de tomar por error otra columna en esa posición,
-- la orden de servicio no es una columna directa: se extrae del texto de
-  ``Nombre Centro Costo`` (``…Os050…`` -> ``50``).
-
-Notas de comparación de fechas:
-
-- las fechas de actividades de la ODS (inicio/fin del trabajador para el
-  contrato comercial u orden de servicio) corresponden a la vigencia del
-  **contrato**, por lo que se comparan contra ``Fecha Inicio`` y
-  ``Fecha Vencimiento`` del Informe, **no** contra ``Fecha de Ingreso`` /
-  ``Fecha de retiro`` (vínculo laboral, un concepto distinto).
+Las decisiones de formato (por que las columnas se buscan por nombre, contra
+que fechas se compara, que es la "progresion" de ITALCO) estan en README.md.
 """
 from __future__ import annotations
 
@@ -79,9 +45,6 @@ MAPEO_COLUMNAS = [
     ("Nombres", "Nombres", "Nombres", "texto"),
     ("Apellidos", "Apellidos", "Apellidos", "texto"),
     ("Cargo", "Cargo", "CargoContratoLaboral", "texto"),
-    # Las fechas de actividades de la ODS son la vigencia del CONTRATO, así que
-    # se comparan contra Fecha Inicio / Fecha Vencimiento del Informe (no contra
-    # Fecha de Ingreso / Fecha de retiro, que son del vínculo laboral).
     (
         "Fecha Inicio",
         "Fecha Inicio",
@@ -95,38 +58,15 @@ MAPEO_COLUMNAS = [
         "fecha",
     ),
     ("Días Trabajados", "Dias Trabajados", "DiasTrabajadosEnMes", "numero"),
-    # Salario diario: Informe ("Salario Diario Contratado") vs ODS
-    # ("SalarioDiarioPesos"). Se compara como valor numérico normalizado y se
-    # presenta formateado en pesos colombianos.
     ("Salario", "Salario Diario Contratado", "SalarioDiarioPesos", "moneda"),
 ]
 
 COL_DOC_ODS = "NumeroDocumento"
 COL_DOCUMENTO = "Documento"
 
-# ---------------------------------------------------------------------------
-# Formato ITALCO
-# ---------------------------------------------------------------------------
-# En ITALCO el Informe es la "progresión" mensual, con un layout distinto al de
-# TABARCA:
-#
-# - una sola hoja cuyo nombre incluye el mes (``PROGRESION JULIO 2025``), así que
-#   se lee la primera hoja, no una llamada "Informe";
-# - el encabezado real no es la primera fila (hay filas de título arriba); se
-#   detecta como la primera fila que trae a la vez ``Documento`` y
-#   ``Nombre Completo``;
-# - la primera columna no tiene nombre y marca ``ACTUAL`` / ``ANTERIOR`` /
-#   ``DIFERENCIA`` por persona. Solo interesan las filas ``DIFERENCIA`` (el
-#   ajuste del mes), así que se filtra por esa columna sin nombre;
-# - el nombre viene como un único ``Nombre Completo`` (no separado en
-#   Nombres/Apellidos), por lo que en la ODS se compara contra la combinación
-#   ``Nombres + Apellidos`` (ver ``COL_NOMBRE_COMPLETO_ODS``);
-# - las fechas comparadas son ``Fecha de Inicio`` y ``Fecha retiro`` del Informe
-#   contra las fechas de actividades del contrato en la ODS.
+# --- Formato ITALCO (la "progresion" mensual). Ver README.md. ---------------
 
-# Columnas del Informe ITALCO, localizadas por NOMBRE (con alias). ``Documento``
-# se renombra a ``Identificacion`` para reutilizar el mismo cruce por documento
-# que TABARCA.
+# ``Documento`` se renombra a ``Identificacion`` para reutilizar el cruce de TABARCA.
 INFORME_ITALCO_COLUMNAS = {
     "Identificacion": ["Documento"],
     "Nombre Completo": ["Nombre Completo"],
@@ -135,26 +75,14 @@ INFORME_ITALCO_COLUMNAS = {
     "Fecha retiro": ["Fecha retiro", "Fecha Retiro"],
 }
 
-# Columna derivada en la ODS: nombre completo = Nombres + Apellidos, para
-# compararlo contra el único ``Nombre Completo`` del Informe ITALCO.
+# Nombre completo derivado en la ODS (Nombres + Apellidos).
 COL_NOMBRE_COMPLETO_ODS = "_NombreCompletoODS"
 
-# Días del mes usados para pasar el Sueldo Base (mensual) a salario diario en
-# ITALCO. La convención de nómina colombiana usa 30 días/mes, y se verificó que
-# ``Sueldo Base (fila ACTUAL) / 30`` == ``SalarioDiarioPesos`` de la ODS.
-DIAS_MES_ITALCO = 30
+DIAS_MES_ITALCO = 30  # convencion de nomina colombiana: mensual / 30 = diario
 
-# Mapeo de comparación ITALCO (etiqueta, col Informe, col ODS, tipo). A
-# diferencia de TABARCA, aquí las fechas de actividades de la ODS se comparan
-# contra ``Fecha de Inicio`` / ``Fecha retiro`` del Informe (así lo define el
-# formato ITALCO de la progresión).
 MAPEO_ITALCO = [
-    # "os": la OS del Informe sale del "Perfil Contable" (BCA OS 37 CONVENCIONAL)
-    # y la de la ODS viene como "0DS37"; se comparan por su número (37).
     ("OS", "OS", "No_de_orden_de_servicio_conocido_por_el_contratista", "os"),
     ("Nombre Completo", "Nombre Completo", COL_NOMBRE_COMPLETO_ODS, "texto"),
-    # "cargo": ignora el marcador de progresión "(PROGRE)" que el Informe añade y
-    # la ODS no, para no marcar como diferencia cargos sustancialmente iguales.
     ("Cargo", "Cargo", "CargoContratoLaboral", "cargo"),
     (
         "Fecha Inicio",
@@ -168,14 +96,18 @@ MAPEO_ITALCO = [
         "Fecha_fin_de_actividades_del_trabajador_para_el_contrato_comercial_u_orden_de_servicio",
         "fecha",
     ),
-    # Salario diario del Informe (Sueldo Base de la fila ACTUAL / 30, derivado en
-    # ``leer_informe_italco``) contra el SalarioDiarioPesos de la ODS, en COP.
     ("Salario", "SalarioDiario", "SalarioDiarioPesos", "moneda"),
 ]
 
 
 def solo_digitos(valor) -> str:
-    """Deja solo los dígitos (para comparar documentos: ``91.499.442`` -> ``91499442``)."""
+    """Deja solo los digitos: ``91.499.442`` -> ``91499442``.
+
+    Un float entero se pasa antes a ``int``: Excel puede traer el documento como
+    numero y ``str(1096198448.0)`` dejaria un ``0`` de mas al final.
+    """
+    if isinstance(valor, float) and valor.is_integer():
+        valor = int(valor)
     return re.sub(r"\D", "", str(valor))
 
 
@@ -189,14 +121,10 @@ def norm_texto(valor) -> str:
 
 
 def norm_cargo(valor) -> str:
-    """Normaliza un cargo para comparar Informe ITALCO contra ODS.
+    """Normaliza un cargo, ignorando el marcador ``(PROGRE)`` de la progresion.
 
-    El Informe de la progresión añade al cargo el marcador ``(PROGRE)`` /
-    ``(PROGRESION)`` que la ODS no trae, así que ``AYUDANTE TECNICO A / TUBERIA
-    C6 (PROGRE)`` y ``AYUDANTE TECNICO A / TUBERIA C6`` son el mismo cargo. Se
-    quita ese paréntesis de progresión (además de la normalización de texto
-    habitual) para que no cuente como diferencia; las diferencias reales del
-    cargo (p. ej. ``E12`` vs ``E11``) se conservan.
+    Asi ``AYUDANTE TECNICO A C6 (PROGRE)`` y ``AYUDANTE TECNICO A C6`` son el
+    mismo cargo, pero ``E12`` vs ``E11`` sigue siendo una diferencia.
     """
     texto = norm_texto(valor)                      # mayúsculas, sin acentos, espacios colapsados
     texto = re.sub(r"\(\s*PROG[A-Z]*\s*\)", "", texto)  # (PROGRE), (PROGRESION), (PROG)
@@ -215,12 +143,10 @@ def extraer_os(valor) -> int | None:
 
 
 def _os_comparable(valor) -> str:
-    """Número de orden de servicio (último grupo de dígitos) para comparar.
+    """Numero de la orden de servicio (ultimo grupo de digitos).
 
-    En ITALCO la OS llega con formatos distintos a cada lado: en el Informe como
-    ``BCA OS 37 CONVENCIONAL`` y en la ODS como ``0DS37``. Se reduce ambos al
-    número final (``37``) para compararlos sin depender del texto. Vacío si no
-    hay dígitos.
+    Reduce ``BCA OS 37 CONVENCIONAL``, ``37`` y ``0DS37`` a ``"37"``. Un float
+    entero se pasa a ``int``: de ``37.0`` se tomaria el ``0`` final.
     """
     if valor is None:
         return ""
@@ -229,23 +155,17 @@ def _os_comparable(valor) -> str:
             return ""
     except (TypeError, ValueError):
         pass
+    if isinstance(valor, float) and valor.is_integer():
+        valor = int(valor)
     numeros = re.findall(r"\d+", str(valor))
     return str(int(numeros[-1])) if numeros else ""
 
 
 def normalizar_moneda(valor) -> float | None:
-    """Normaliza un valor monetario heterogéneo a ``float`` (o ``None``).
+    """Normaliza un importe heterogeneo a ``float`` (o ``None``).
 
-    Reutilizable para comparar y formatear cualquier salario/importe. Tolera:
-
-    - ``None`` / ``NaN`` / cadenas vacías -> ``None``;
-    - valores ya numéricos (``int`` / ``float``);
-    - símbolo ``$``, espacios y demás caracteres no numéricos;
-    - separadores de miles/decimales en convención colombiana
-      (``1.234.567,89``) o anglosajona (``1,234,567.89``).
-
-    Así ``"$ 120.000"``, ``"120000"`` y ``120000.0`` resultan en el mismo
-    número y la comparación nunca depende de la forma del texto.
+    Tolera nulos, numeros, ``$``, y separadores en convencion colombiana
+    (``1.234.567,89``) o anglosajona (``1,234,567.89``).
     """
     if valor is None:
         return None
@@ -301,12 +221,10 @@ def normalizar_moneda(valor) -> float | None:
 
 
 def formatear_cop(valor) -> str:
-    """Formatea un valor en moneda colombiana (COP): ``$120.000``.
+    """Formatea en pesos colombianos: ``120000`` -> ``$120.000``.
 
-    - separador de miles con punto, sin notación científica;
-    - sin decimales cuando el valor es entero; con dos decimales (coma) si los
-      tiene (``$120.000,50``);
-    - cadena vacía cuando el valor no es interpretable como número.
+    Sin decimales si el valor es entero; con coma decimal si los tiene. Cadena
+    vacia si no es interpretable como numero.
     """
     numero = normalizar_moneda(valor)
     if numero is None:
@@ -390,12 +308,10 @@ def _partes_cargo(valor) -> set[str]:
 
 
 def _coinciden(val_inf, val_ods, tipo) -> bool:
-    """Decide si el valor del Informe y el de la ODS se consideran iguales.
+    """Decide si el valor del Informe y el de la ODS son iguales.
 
-    Para casi todos los tipos es la igualdad de su forma canónica. El tipo
-    ``cargo`` es especial: como el Informe da alternativas separadas por ``/``
-    (``ANDAMIERO B / D8``), basta con que **una** de ellas coincida con alguna de
-    las de la ODS para tomarlo como el mismo cargo.
+    Es la igualdad de su forma canonica, salvo ``cargo``: el Informe da
+    alternativas separadas por ``/`` y basta que una coincida.
     """
     if tipo == "cargo":
         partes_inf = _partes_cargo(val_inf)
@@ -407,14 +323,11 @@ def _coinciden(val_inf, val_ods, tipo) -> bool:
 
 
 def _detectar_fila_encabezado_informe(xls: pd.ExcelFile, max_filas: int = 25) -> int:
-    """Detecta la fila del encabezado real de la hoja 'Informe'.
+    """Fila del encabezado real de la hoja ``Informe``.
 
-    El número de filas de título antes del encabezado varía entre exportes
-    mensuales (p. ej. fila 10 unos meses, fila 7 otros), así que en vez de
-    asumir una posición fija se busca la primera fila que trae a la vez una
-    columna de identificación (alias de ``Identificacion``) y ``Nombres``,
-    igual que ``leer_informe_italco`` ya hace para el Informe ITALCO. Si no se
-    encuentra (formato inesperado), cae al valor histórico ``INFORME_HEADER_ROW``.
+    Varia entre exportes mensuales, asi que se busca la primera fila que trae a
+    la vez una columna de identificacion y ``Nombres``. Si no aparece, se usa
+    ``INFORME_HEADER_ROW``.
     """
     crudo = xls.parse(INFORME_SHEET, header=None, nrows=max_filas)
     alias_doc = {norm_texto(a) for a in INFORME_COLUMNAS["Identificacion"]}
@@ -427,13 +340,10 @@ def _detectar_fila_encabezado_informe(xls: pd.ExcelFile, max_filas: int = 25) ->
 
 
 def leer_informe(source) -> pd.DataFrame:
-    """Lee la hoja 'Informe', localiza las columnas usadas por nombre y deriva la OS.
+    """Lee la hoja ``Informe``, localiza las columnas por nombre y deriva la OS.
 
-    La fila de encabezado se detecta dinámicamente (ver
-    ``_detectar_fila_encabezado_informe``) porque varía entre exportes
-    mensuales. Las columnas se buscan por nombre normalizado (con alias), no
-    por posición, porque el layout también varía. Una columna que no aparezca
-    simplemente no se renombra y queda ausente del resultado.
+    La fila del encabezado y los nombres de columna varian entre exportes; una
+    columna que no aparezca queda ausente en vez de tomarse por posicion.
     """
     # Se cierra explícitamente (``with``): ``pd.ExcelFile`` mantiene el archivo
     # abierto hasta que se cierra o se recolecta la basura, y en Windows un
@@ -470,18 +380,10 @@ def leer_ods(source) -> pd.DataFrame:
 
 
 def leer_informe_italco(source) -> pd.DataFrame:
-    """Lee el Informe ITALCO (progresión) y deja solo las filas de DIFERENCIA.
+    """Lee el Informe ITALCO (progresion) y deja solo las filas de DIFERENCIA.
 
-    Detecta la fila de encabezado real (la primera con ``Documento`` y
-    ``Nombre Completo``, porque hay filas de título arriba) y localiza las columnas
-    usadas por nombre (renombrando ``Documento`` -> ``Identificacion`` para
-    reutilizar el cruce por documento).
-
-    La primera columna, sin nombre, marca ``ACTUAL`` / ``ANTERIOR`` / ``DIFERENCIA``.
-    El resultado son las filas ``DIFERENCIA`` (el ajuste del mes), pero antes de
-    filtrar se guarda el ``Sueldo Base`` de la fila ``ACTUAL`` de cada persona para
-    derivar el salario diario (``Sueldo Base / 30``), ya que en la fila DIFERENCIA
-    la columna de salario es un delta, no el salario real.
+    Antes de filtrar guarda el ``Sueldo Base`` de la fila ``ACTUAL`` de cada
+    persona: en la fila DIFERENCIA esa columna es un delta, no el salario real.
     """
     crudo = pd.read_excel(source, sheet_name=0, header=None)
     fila_encabezado = 0
@@ -527,10 +429,16 @@ def leer_informe_italco(source) -> pd.DataFrame:
     # Filtrar al ajuste (DIFERENCIA).
     df = df[marca == "DIFERENCIA"].copy()
 
-    # La OS no es una columna directa: se extrae del "Perfil Contable"
-    # (``BCA OS 37 CONVENCIONAL`` -> ``37``), igual que TABARCA la extrae del
-    # centro de costo.
-    df["OS"] = df["Perfil Contable"] if "Perfil Contable" in df.columns else None
+    # La OS varía entre exportes: unos la traen dentro del "Perfil Contable"
+    # (``BCA OS 37 CONVENCIONAL``, igual que TABARCA la extrae del centro de
+    # costo) y otros como columna propia ``OS`` con el número suelto (``37``).
+    # Se acepta cualquiera de las dos; ``_os_comparable`` se queda con el número.
+    # Se busca sobre ``por_norm`` (nombres originales) porque ninguna de las dos
+    # entra en el rename, así que su nombre real no cambió.
+    col_os = por_norm.get(norm_texto("Perfil Contable"))
+    if col_os is None:
+        col_os = por_norm.get(norm_texto("OS"))
+    df["OS"] = df[col_os] if col_os is not None else None
 
     # Salario diario = Sueldo Base ACTUAL / 30 (mensual -> diario), para comparar
     # contra el SalarioDiarioPesos de la ODS.
@@ -571,22 +479,12 @@ def _leer_y_concatenar(sources, lector) -> pd.DataFrame:
 
 
 def comparar_mano_obra(informe_source, ods_source, mapeo=None, formato="tabarca") -> pd.DataFrame:
-    """Cruza el Informe contra la ODS y devuelve el DataFrame de validación.
+    """Cruza el Informe contra la ODS y devuelve el DataFrame de validacion.
 
-    ``informe_source`` / ``ods_source`` pueden ser una ruta/buffer (lo que acepte
-    ``pandas.read_excel``) o una **lista** de varias fuentes; en ese caso cada
-    archivo se lee por separado y se concatena antes de cruzar, de modo que una
-    persona de cualquier Informe puede emparejarse con cualquier ODS.
-
-    ``formato`` (``tabarca`` / ``italco``) elige el layout del Informe y el mapeo
-    de comparación: TABARCA usa la hoja ``Informe`` (fila de recobro, OS, salario…)
-    y ITALCO la progresión (filas de DIFERENCIA, nombre completo y fechas de
-    actividades). ``mapeo`` puede forzarse; por defecto se toma el del formato.
-
-    En **ambos** formatos se listan todas las personas del Informe aunque no estén
-    en la ODS: las que no cruzan aparecen con el lado ODS en blanco (todas sus
-    celdas quedan resaltadas), para ver de un vistazo quién está en el Informe pero
-    falta en la ODS.
+    Cada lado acepta una fuente o una lista (se concatenan antes de cruzar).
+    ``formato`` elige el layout: ``tabarca`` (hoja ``Informe``) o ``italco``
+    (progresion). Se listan todas las personas del Informe: las que no estan en
+    la ODS salen con ese lado en blanco.
     """
     es_italco = str(formato).lower() == "italco"
     if es_italco:

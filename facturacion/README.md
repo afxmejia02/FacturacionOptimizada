@@ -1,106 +1,91 @@
-# Facturación – Validación de pagos (PDF vs Excel)
+# facturacion
 
-Compara los **conteos de uno o varios PDFs de facturación** contra la **planilla
-histórica de Excel**, cruzando por fecha. Sirve para validar:
+Compara los conteos de uno o varios **PDF de facturación** contra la **planilla
+histórica de Excel**, cruzando por fecha. Sin interfaz: la UI vive en `web_ui/`.
 
-- **perfiles** – niveles/perfiles facturados (columna `Nivel/Perfil`).
-- **equipos y servicios** – equipos y/o servicios a la vez, incluso si vienen en
-  un mismo PDF que mezcla páginas de los dos formatos.
+| Módulo | Qué hace |
+|---|---|
+| `normalizacion.py` | Formas canónicas de textos, fechas y cantidades. |
+| `pdf.py` | Extracción de conteos desde el informe PDF. |
+| `histograma.py` | Lectura del Excel histórico. |
 
-Se pueden subir **varios PDF** en una misma validación; los conteos de todos se
-acumulan antes de cruzarlos contra el Excel.
+```python
+from facturacion import extraer_conteo_pdf, leer_histograma_largo
+```
 
-Para cada fecha y concepto se muestra el valor del PDF, el del Excel y un estado
-(`OK` o `Valores diferentes`).
+Valida **perfiles** (columna `Nivel/Perfil`) y **equipos y servicios**, incluso
+si vienen mezclados en un mismo PDF. Se pueden subir varios PDF: los conteos se
+acumulan antes de cruzar. Para cada fecha y concepto se muestra el valor del PDF,
+el del Excel y un estado (`OK` o `Valores diferentes`).
 
-La comparación es **bidireccional**: además de verificar que lo del PDF esté en el
-Excel, comprueba que lo del Excel (en la sección correspondiente) esté en el PDF.
-Para no comparar contra secciones ajenas (perfiles, etc.), se detecta a qué
-sección del histograma corresponde cada PDF por el **título de la página**
-(p. ej. “…ELEMENTOS, HERRAMIENTAS Y EQUIPOS TRANSVERSALES” → `5.5`; “…OBRAS O
-SERVICIOS TÍPICOS” → `5.6`) y solo se cruza esa sección. Una tarifa que esté en el
-Excel con **valor 0** y sin registro en el PDF se considera válida (no se muestra);
-una con valor > 0 ausente del PDF se marca como diferencia.
+El Excel debe traer la columna `DESCRIPCION TARIFA` y columnas de fecha con las
+cantidades por concepto.
 
-En **perfiles**, el lado Excel se toma como “todo lo que **no** es equipos ni
-servicios”: se excluyen los `COD. TAR.` `5.5` y `5.6` (en vez de exigir que la
-descripción diga “Nivel/Perfil”), de modo que también entran tarifas de mano de
-obra sin esa palabra (p. ej. `Inspector certificado: API/ASME NACIONAL`, COD `5.4`)
-y aparecen como diferencia cuando están en el Excel pero no en el PDF.
+## Por qué el código está escrito así
 
-## Componente principal
+### El cruce es bidireccional, pero acotado por sección
 
-`gui_validation_app.py` define la clase **`ServicesValidationApp`**. Métodos clave
-que reutiliza la web:
+No basta con verificar que lo del PDF esté en el Excel: también se comprueba lo
+contrario. Para no comparar contra secciones ajenas se detecta a qué sección del
+histograma corresponde cada PDF por el **título de la página**
+(“…ELEMENTOS, HERRAMIENTAS Y EQUIPOS TRANSVERSALES” → `5.5`; “…OBRAS O SERVICIOS
+TÍPICOS” → `5.6`) y solo se cruza esa sección.
 
-- `_extraer_conteo_pdf(path, tipo)` – conteos por fecha desde el PDF. `tipo` puede
-  ser `perfiles`, `equipos`, `servicios` o `equipos_servicios` (alias:
-  `"equipos y servicios"`, `"todos"`).
-- `_extraer_conteo_excel(path, fecha)` – conteos de la planilla para una fecha
-  (valor **tal cual** del Excel, sin conversión de unidades).
-- `_leer_histograma_largo(path, prefijos_cod=None)` – histograma en formato largo
-  (`FECHA`, `DESCRIPCION TARIFA`, `CLAVE`, `VALOR`), **conservando ceros** y
-  filtrable por sección (`COD. TAR.`). Es la base del cruce bidireccional.
-- `_prefijos_seccion_pdf(path_hist, paths_pdf)` – casa el título de cada página de
-  los PDF con la descripción del encabezado de sección del histograma y devuelve
-  su `COD. TAR.` (p. ej. `5.5`, `5.6`).
-- `_clave_equipo` – clave de emparejamiento robusta: pliega tildes/mayúsculas,
-  descarta signos y conjunciones (y/o/e/u) y **elimina espacios**, de modo que
-  `(10H)` y `(10 H)` cruzan igual.
-- `_extraer_valor_etiqueta` / `_limpiar_nombre_equipo` – leen el nombre del
-  equipo/servicio de la etiqueta `EQUIPO:` / `SERVICIO:`. Exigen que la celda
-  **sea** la etiqueta (no que la contenga, para no confundir la palabra
-  “EQUIPOS” de un texto largo). El texto que sobra tras el último `)` se descarta
-  **solo si es un fragmento inicial duplicado del propio nombre** (artefacto de
-  superposición, p. ej. `… (24 H) Motoso`); una continuación legítima como
-  `Torno … (Diurno / Nocturno) para bridas >4 NPS <= 48 NPS` **se conserva** para
-  no suprimir información que sí coincide con el Excel.
-- `_parsear_cantidad` – convierte la cantidad de una planilla a número con la
-  **convención colombiana** (la que usan tanto el PDF como el Excel): el **punto
-  es separador de miles** y la **coma es el separador decimal**
-  (`3.139` → 3139, `3.139,00` → 3139, `1.452,6` → 1452.6, `153,67` → 153.67,
-  `7,7` → 7.7). Los resultados se muestran/exportan en ese mismo formato
-  (`format_number_co`).
-- `_normalizar_perfil`, `_normalizar_fecha`, `_normalizar_busqueda` – normalización
-  de texto para que el cruce sea robusto a tildes, mayúsculas y formato.
-- `_parsear_cantidad(valor)` – convierte la cantidad de la planilla a número,
-  tolerando separadores de miles/decimales en cualquier convención (`1.452,6`,
-  `1452,6`, `1,452.6`, `1452.6` → `1452.6`).
-- `_parsear_observacion_perfil(obs)` – interpreta la columna **Observaciones** de
-  la planilla de perfiles y devuelve `(recategorizado, es_ef, no_facturable, es_24h)`.
-  Los marcadores pueden coexistir y en cualquier orden:
-  - `RECATEGORIZADO … COMO <nivel>` → el turno se cuenta en el nivel indicado.
-  - `E y F` → aunque la jornada sea de **24 horas** (que normalmente cuenta 1/3),
-    el turno se cuenta como **1 unidad**.
-  - `NO FACTURABLE` → la fila **no cuenta**.
-  - `24` / `24H` / `24HRS` / `24 HORAS` → jornada de **24 horas**: el turno cuenta
-    **1/3**. La jornada de 24 h se detecta tanto al inicio de la hoja (`tabla[4][2]`)
-    como en esta columna de observaciones.
+Una tarifa que esté en el Excel con **valor 0** y sin registro en el PDF es
+válida (no se muestra); con valor > 0 y ausente del PDF, es una diferencia.
 
-Equipos y servicios (formato vigente) comparten estructura (etiqueta + detalle
-con `FECHA`/`CANTIDAD` por fila), por eso un único extractor por etiqueta sirve a
-ambos; para servicios hay además un *fallback* al formato antiguo (fecha de
-reporte + columna de servicio).
+En **perfiles** el lado Excel se toma como “todo lo que **no** es equipos ni
+servicios”: se excluyen los `COD. TAR.` `5.5` y `5.6`, en vez de exigir que la
+descripción diga “Nivel/Perfil”. Así entran tarifas de mano de obra que no usan
+esa palabra (p. ej. `Inspector certificado: API/ASME NACIONAL`, cód. `5.4`).
 
-La clase también incluye una GUI de escritorio (tkinter). En la web se instancia
-con `__new__` para reutilizar los métodos **sin** abrir ventanas.
+### Por qué se normaliza tanto antes de comparar
 
-## Uso
+Los mismos conceptos se escriben distinto en cada archivo. `clave_equipo` pliega
+tildes y mayúsculas, descarta signos y conjunciones (y/o/e/u) y **elimina
+espacios**, de modo que `(10H)` y `(10 H)` cruzan igual.
 
-Se usa a través de la interfaz Streamlit del repositorio (ver el
-[README raíz](../README.md)): herramienta **“Validación PDF + Excel”**, eligiendo
-el tipo (perfiles / equipos y servicios) y subiendo uno o varios PDF y uno o
-varios Excel (la planilla histórica se arma sumando todos los Excel).
-Los resultados se pueden **filtrar por fecha y por tipo**
-(servicio/equipo/perfil), de forma independiente o combinada.
+### Cantidades: convención colombiana
 
-El Excel debe contener la columna `DESCRIPCION TARIFA` y columnas de fecha
-(tipo fecha) con las cantidades por concepto.
+Tanto el PDF como el Excel usan **punto para miles y coma para decimales**:
+`3.139` → 3139, `3.139,00` → 3139, `1.452,6` → 1452.6, `153,67` → 153.67. Los
+resultados se muestran y exportan en ese mismo formato.
 
-## Archivos
+### Leer el nombre del equipo: dos trampas
 
-| Archivo | Descripción |
-|---------|-------------|
-| `gui_validation_app.py` | Lógica de extracción/comparación + GUI de escritorio. |
-| `revisar.ipynb` | Notebook de exploración (referencia, no producción). |
-| `requirements.txt` | Dependencias del módulo. |
+`extraer_valor_etiqueta` exige que la celda **sea** la etiqueta (`EQUIPO:`), no
+que la contenga — si no, la palabra “EQUIPOS” dentro de un texto largo hace tomar
+la celda equivocada.
+
+El texto sobrante tras el último `)` se descarta **solo si es un fragmento
+inicial duplicado del propio nombre** (artefacto de superposición del PDF, p. ej.
+`… (24 H) Motoso`). Una continuación legítima como `Torno … (Diurno / Nocturno)
+para bridas >4 NPS <= 48 NPS` **se conserva**: sí está en el PDF y coincide con
+el Excel.
+
+### La columna Observaciones de perfiles
+
+`parsear_observacion_perfil` devuelve `(recategorizado, es_ef, no_facturable,
+es_24h)`. Los marcadores pueden coexistir y venir en cualquier orden:
+
+| Marcador | Efecto |
+|---|---|
+| `RECATEGORIZADO … COMO <nivel>` | El turno se cuenta en el nivel indicado. |
+| `E y F` | Aunque la jornada sea de 24 h, cuenta como **1 unidad**. |
+| `NO FACTURABLE` | La fila **no cuenta**. |
+| `24` / `24H` / `24HRS` / `24 HORAS` | Jornada de 24 h: el turno cuenta **1/3**. |
+
+La jornada de 24 h se detecta tanto al inicio de la hoja (`tabla[4][2]`) como en
+esta columna.
+
+### Un solo extractor para equipos y servicios
+
+Ambos comparten estructura (etiqueta + detalle con `FECHA`/`CANTIDAD` por fila),
+así que un único extractor por etiqueta sirve a los dos. Para servicios queda un
+*fallback* al formato antiguo (fecha de reporte + columna de servicio).
+
+## Pruebas
+
+```bash
+python -m unittest discover -s facturacion -p "test_*.py" -t .
+```

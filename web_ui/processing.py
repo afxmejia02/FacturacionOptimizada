@@ -1,14 +1,11 @@
-"""Processing orchestration for the web UI.
+"""Orquestacion entre la UI de Streamlit (``app.py``) y los paquetes de logica.
 
-This module bridges the Streamlit front end (``app.py``) with the existing
-extraction logic that lives in ``facturacion/gui_validation_app.py`` (PDF/Excel
-validation) and ``mapa-de-cargos/gui_app.py`` (payroll reconciliation). It owns
-the temp-file handling and the cross-PDF/Excel reconciliation, but contains no
-Streamlit calls so it stays testable.
+Usa ``facturacion`` (PDF/Excel) y ``nomina`` (conciliacion y mano de obra). Se
+encarga de los archivos temporales y del cruce; no llama a Streamlit, para poder
+probarse aparte.
 """
 from __future__ import annotations
 
-import importlib.util
 import os
 import re
 import sys
@@ -20,13 +17,33 @@ import pandas as pd
 
 from rendering import build_colored_table, build_mano_obra_table, format_count, format_dataframe
 
-# Ensure the parent workspace is importable so we can reuse the desktop modules.
+# La raiz del repo debe estar en sys.path para importar facturacion/ y nomina/.
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from facturacion import gui_validation_app as validator  # noqa: E402
+from facturacion import (  # noqa: E402
+    clave_equipo,
+    col_codigo_tarifa,
+    es_celda_vacia,
+    extraer_conteo_pdf,
+    leer_excel_facturacion,
+    leer_histograma_largo,
+    normalizar_busqueda,
+    normalizar_fecha,
+    normalizar_perfil,
+    parsear_observacion_perfil,
+    prefijos_seccion_pdf,
+)
 from codigos import excluded_codes  # noqa: E402
+from nomina import (  # noqa: E402
+    conciliar,
+    formatear_valores,
+    procesar_desprendibles,
+    procesar_seguridad_social,
+    procesar_transferencias,
+)
+from nomina import mano_obra  # noqa: E402
 
 DEBUG_MODE = os.environ.get("VALIDATION_DEBUG", "1") == "1"
 
@@ -36,43 +53,6 @@ def _debug_print(message: str) -> None:
         print(f"[DEBUG][web_ui] {message}")
 
 
-def _new_validator():
-    """Instantiate the validator without running its tkinter ``__init__``."""
-    obj = validator.ServicesValidationApp.__new__(validator.ServicesValidationApp)
-    obj.debug_mode = False  # métodos como _es_celda_vacia lo consultan
-    return obj
-
-
-def load_payroll_module():
-    """Dynamically load ``mapa-de-cargos/gui_app.py`` (its folder name isn't importable)."""
-    payroll_path = ROOT / "mapa-de-cargos" / "gui_app.py"
-    if not payroll_path.exists():
-        raise FileNotFoundError(
-            "No se encontró el módulo de conciliación (mapa-de-cargos/gui_app.py)."
-        )
-
-    spec = importlib.util.spec_from_file_location("payroll_module", str(payroll_path))
-    payroll = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(payroll)
-    return payroll
-
-
-def load_mano_obra_module():
-    """Dynamically load ``mapa-de-cargos/mano_obra.py`` (its folder isn't importable)."""
-    module_path = ROOT / "mapa-de-cargos" / "mano_obra.py"
-    if not module_path.exists():
-        raise FileNotFoundError(
-            "No se encontró el módulo de mano de obra (mapa-de-cargos/mano_obra.py)."
-        )
-
-    spec = importlib.util.spec_from_file_location("mano_obra_module", str(module_path))
-    mano_obra = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(mano_obra)
-    return mano_obra
-
-
 # ---------------------------------------------------------------------------
 # Perfiles (PDF vs Excel by date)
 # ---------------------------------------------------------------------------
@@ -80,7 +60,6 @@ def load_mano_obra_module():
 def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
     registros = []
     excluded_profiles = {"none", "observaciones"}
-    validator_obj = _new_validator()
 
     with tempfile.TemporaryDirectory(prefix="web_ui_perfiles_") as _tmp_dir:
         with open(pdf_path, "rb") as pdf_handle:
@@ -100,14 +79,14 @@ def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
 
                     header = tabla[6]
                     header_norm = [
-                        validator_obj._normalizar_busqueda(celda).replace(" ", "") if celda else ""
+                        normalizar_busqueda(celda).replace(" ", "") if celda else ""
                         for celda in header
                     ]
                     if "nivel/perfil" not in header_norm:
                         continue
 
                     idx_perfil = header_norm.index("nivel/perfil")
-                    fecha_detectada = validator_obj._normalizar_fecha(header[-1]) if header else None
+                    fecha_detectada = normalizar_fecha(header[-1]) if header else None
                     if fecha_detectada is None:
                         continue
 
@@ -133,14 +112,14 @@ def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
                         # Interpretar la columna Observaciones (recategorización,
                         # "E y F", "NO FACTURABLE" y "24h", que pueden coexistir).
                         recategorizado, es_ef, no_facturable, es_24h_obs = (
-                            validator_obj._parsear_observacion_perfil(observacion)
+                            parsear_observacion_perfil(observacion)
                         )
                         if no_facturable:
                             continue  # la observación indica que no se factura
 
                         if recategorizado:
                             fuente = recategorizado
-                        elif es_ef or es_24h_obs or validator_obj._es_celda_vacia(observacion):
+                        elif es_ef or es_24h_obs or es_celda_vacia(observacion):
                             # "E y F", "24 horas" o sin observación (celda vacía,
                             # incluida None/espacios): el nivel es el de la columna,
                             # no la última palabra de la observación.
@@ -149,7 +128,7 @@ def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
                             # Otra observación no reconocida: comportamiento previo.
                             fuente = str(observacion).split()[-1]
                         if fuente:
-                            perfil_norm = validator_obj._normalizar_perfil(fuente)
+                            perfil_norm = normalizar_perfil(fuente)
 
                         if not perfil_norm:
                             continue
@@ -177,9 +156,8 @@ def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
 
 
 def _extract_excel_perfiles_by_date(excel_path: str) -> pd.DataFrame:
-    validator_obj = _new_validator()
     excluded_profiles = {"none", "observaciones"}
-    df_hist = validator_obj._leer_excel_facturacion(excel_path)
+    df_hist = leer_excel_facturacion(excel_path)
     if "DESCRIPCION TARIFA" not in df_hist.columns:
         raise KeyError("El archivo Excel no contiene la columna 'DESCRIPCION TARIFA'.")
 
@@ -189,7 +167,7 @@ def _extract_excel_perfiles_by_date(excel_path: str) -> pd.DataFrame:
     # Exigir el código descarta filas sin tarifa (encabezados, firmas de pie de
     # página como "Vo.Bo. Lider…" o nombres) e incluye tarifas de mano de obra que
     # no dicen "Nivel/Perfil" (p. ej. "Inspector certificado: API/ASME NACIONAL").
-    col_cod = validator_obj._col_codigo_tarifa(df_niveles)
+    col_cod = col_codigo_tarifa(df_niveles)
     if col_cod is not None:
         cods = df_niveles[col_cod].astype(str).str.strip()
         es_perfil = cods.str.startswith("5.") & ~(
@@ -217,7 +195,7 @@ def _extract_excel_perfiles_by_date(excel_path: str) -> pd.DataFrame:
     df_largo["VALOR"] = pd.to_numeric(df_largo["VALOR"], errors="coerce")
     df_largo = df_largo[df_largo["VALOR"].notna()].copy()
     df_largo = df_largo[df_largo["VALOR"] != 0].copy()
-    df_largo["PERFIL_NORM"] = df_largo["DESCRIPCION TARIFA"].apply(validator_obj._normalizar_perfil)
+    df_largo["PERFIL_NORM"] = df_largo["DESCRIPCION TARIFA"].apply(normalizar_perfil)
     df_largo = df_largo[
         ~df_largo["PERFIL_NORM"].astype(str).str.strip().str.lower().isin(excluded_profiles)
     ].copy()
@@ -343,7 +321,6 @@ def _codigo_perfil_italco(texto):
 
 def _extract_perfiles_italco_by_date(pdf_path: str) -> pd.DataFrame:
     registros = []
-    validator_obj = _new_validator()
 
     import pdfplumber
 
@@ -355,7 +332,7 @@ def _extract_perfiles_italco_by_date(pdf_path: str) -> pd.DataFrame:
                 header_idx = None
                 for i, row in enumerate(tabla):
                     cells = [celda if celda is not None else "" for celda in row]
-                    norm = [validator_obj._normalizar_busqueda(c).replace(" ", "") for c in cells]
+                    norm = [normalizar_busqueda(c).replace(" ", "") for c in cells]
                     if fecha is None and "fechareporte" in norm:
                         j = norm.index("fechareporte")
                         for siguiente in cells[j + 1:]:
@@ -396,12 +373,11 @@ def _extract_perfiles_italco_by_date(pdf_path: str) -> pd.DataFrame:
 def _leer_histograma_italco(excel_path: str) -> pd.DataFrame:
     """Lee el histograma ITALCO detectando la fila de encabezado real
     (``ITEM PAGO | ... | CATEGORÍA | DESCRIPCIÓN | ...``), que no es la primera."""
-    validator_obj = _new_validator()
     crudo = pd.read_excel(excel_path, header=None)
     fila_encabezado = 0
     for i in range(min(25, len(crudo))):
         celdas = {
-            validator_obj._normalizar_busqueda(v).replace(" ", "") for v in crudo.iloc[i].tolist()
+            normalizar_busqueda(v).replace(" ", "") for v in crudo.iloc[i].tolist()
         }
         if "itempago" in celdas or "categoria" in celdas:
             fila_encabezado = i
@@ -412,12 +388,11 @@ def _leer_histograma_italco(excel_path: str) -> pd.DataFrame:
 def _extract_excel_perfiles_italco_by_date(excel_path: str) -> pd.DataFrame:
     import datetime as _dt
 
-    validator_obj = _new_validator()
     df_hist = _leer_histograma_italco(excel_path)
 
     def _col(clave):
         return next(
-            (c for c in df_hist.columns if clave in validator_obj._normalizar_busqueda(c).replace(" ", "")),
+            (c for c in df_hist.columns if clave in normalizar_busqueda(c).replace(" ", "")),
             None,
         )
 
@@ -562,7 +537,6 @@ def process_pagos(pdf_files, excel_files, tipo, formato="tabarca"):
         f"pdfs={[getattr(f, 'name', 'N/A') for f in pdf_files]}, "
         f"excels={[getattr(f, 'name', 'N/A') for f in excel_files]}"
     )
-    validator_obj = _new_validator()
 
     with tempfile.TemporaryDirectory(prefix="web_ui_") as tmp_dir:
         excel_paths = []
@@ -593,7 +567,7 @@ def process_pagos(pdf_files, excel_files, tipo, formato="tabarca"):
         else:
             partes_pdf = []
             for pdf_path in pdf_paths:
-                df_parte = validator_obj._extraer_conteo_pdf(pdf_path, tipo)
+                df_parte = extraer_conteo_pdf(pdf_path, tipo)
                 if df_parte is not None and not df_parte.empty:
                     partes_pdf.append(df_parte)
             if not partes_pdf:
@@ -602,7 +576,7 @@ def process_pagos(pdf_files, excel_files, tipo, formato="tabarca"):
             # Lado PDF: conteos por (fecha, clave robusta), guardando el nombre legible.
             df_pdf = pd.concat(partes_pdf, ignore_index=True)
             df_pdf["FECHA"] = pd.to_datetime(df_pdf["FECHA"], errors="coerce").dt.normalize()
-            df_pdf["CLAVE"] = df_pdf["TIPO DE EQUIPO"].astype(str).map(validator_obj._clave_equipo)
+            df_pdf["CLAVE"] = df_pdf["TIPO DE EQUIPO"].astype(str).map(clave_equipo)
             pdf_agg = df_pdf.groupby(["FECHA", "CLAVE"], as_index=False).agg(
                 CANTIDAD=("CANTIDAD", "sum"),
                 Nombre=("TIPO DE EQUIPO", "first"),
@@ -613,7 +587,7 @@ def process_pagos(pdf_files, excel_files, tipo, formato="tabarca"):
             # validación bidireccional solo abarca lo que el PDF debía reportar.
             prefijos = []
             for excel_path in excel_paths:
-                prefijos = validator_obj._prefijos_seccion_pdf(excel_path, pdf_paths)
+                prefijos = prefijos_seccion_pdf(excel_path, pdf_paths)
                 if prefijos:
                     break
             _debug_print(f"Secciones del histograma detectadas para los PDF: {prefijos or '(sin filtro)'}")
@@ -624,7 +598,7 @@ def process_pagos(pdf_files, excel_files, tipo, formato="tabarca"):
             for excel_path in excel_paths:
                 try:
                     partes_excel.append(
-                        validator_obj._leer_histograma_largo(excel_path, prefijos or None)
+                        leer_histograma_largo(excel_path, prefijos or None)
                     )
                 except Exception:
                     print(f"[WARN][web_ui] No se pudo leer el histograma {excel_path}")
@@ -690,10 +664,6 @@ def process_reconciliation(despr_files, trans_files, seguridad_files, recon_mode
     ``parts`` is a list of ``(title, html_table)`` for display and ``tables`` is
     the matching list of ``(title, DataFrame)`` used to build the PDF export.
     """
-    payroll = load_payroll_module()
-    PayrollApp = payroll.PayrollReconciliationApp
-    payroll_obj = PayrollApp.__new__(PayrollApp)
-
     with tempfile.TemporaryDirectory(prefix="web_ui_rec_") as tmp_base:
         dir_despr = os.path.join(tmp_base, "despr")
         dir_trans = os.path.join(tmp_base, "trans")
@@ -709,19 +679,19 @@ def process_reconciliation(despr_files, trans_files, seguridad_files, recon_mode
             _save_uploads(seguridad_files, dir_seg)
 
         # The desprendibles layout must match the transfer layout (TABARCA / ITALCO).
-        df_despr = payroll_obj._process_desprendibles(dir_despr, transfer_format)
+        df_despr = procesar_desprendibles(dir_despr, transfer_format)
         df_trans = (
-            payroll_obj._process_transferencia(dir_trans, transfer_format)
+            procesar_transferencias(dir_trans, transfer_format)
             if os.listdir(dir_trans)
             else None
         )
         df_seg = (
-            payroll_obj.procesar_seguridad_social(dir_seg, transfer_format)
+            procesar_seguridad_social(dir_seg, transfer_format)
             if os.listdir(dir_seg)
             else None
         )
 
-        reconcile_result = payroll_obj._reconcile_data(df_despr, df_trans, df_seg)
+        reconcile_result = conciliar(df_despr, df_trans, df_seg)
         if isinstance(reconcile_result, tuple) and len(reconcile_result) == 2:
             df_transfers, df_seguridad = reconcile_result
         else:
@@ -734,8 +704,8 @@ def process_reconciliation(despr_files, trans_files, seguridad_files, recon_mode
         df_display_t = df_transfers.copy() if df_transfers is not None else pd.DataFrame()
         df_display_s = df_seguridad.copy() if df_seguridad is not None else pd.DataFrame()
 
-        df_display_t = format_dataframe(df_display_t, payroll_obj.formatear_valores)
-        df_display_s = format_dataframe(df_display_s, payroll_obj.formatear_valores)
+        df_display_t = format_dataframe(df_display_t, formatear_valores)
+        df_display_s = format_dataframe(df_display_s, formatear_valores)
 
         parts = []
         tables = []
@@ -771,8 +741,6 @@ def process_mano_obra(informe_files, ods_files, formato="tabarca"):
     list-valued comparison cells (one element = match, two = mismatch) so the
     Excel export can colour the same cells the HTML table highlights.
     """
-    mano_obra = load_mano_obra_module()
-
     if not isinstance(informe_files, (list, tuple)):
         informe_files = [informe_files]
     if not isinstance(ods_files, (list, tuple)):

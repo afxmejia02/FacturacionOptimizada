@@ -4,44 +4,27 @@ Se ejecutan sin dependencias extra:  ``python -m unittest test_transferencias``
 
 Cubren la corrección del bug "Transferencia no encontrada":
 
-- ``_match_linea_transferencia`` ahora tolera la ausencia de la columna de
+- ``match_linea_transferencia`` ahora tolera la ausencia de la columna de
   fecha, distintos formatos monetarios y ruido de OCR;
-- ``_reconcile_data`` cruza por documento o cuenta y solo marca "no encontrada"
+- ``conciliar`` cruza por documento o cuenta y solo marca "no encontrada"
   cuando realmente no hay coincidencia.
 """
-import importlib.util
 import os
+import sys
 import unittest
 
 import pandas as pd
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-
-def _load(name, filename):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-payroll = _load("payroll_mod", "gui_app.py")
-App = payroll.PayrollReconciliationApp
-
-
-def _app():
-    # __new__ evita la GUI tkinter (igual que hace la web).
-    return App.__new__(App)
+from nomina import conciliar, match_linea_transferencia
 
 
 class TestMatchLineaTransferencia(unittest.TestCase):
-    def setUp(self):
-        self.app = _app()
-
     def test_formato_abril_sin_fecha(self):
         # El layout que rompía el patrón anterior: sin columna de fecha de 8 dígitos.
         linea = "ORTEGON GOMEZ JIMMER EDUARDO 91513843 603168089 250331 PAGO NOMINA BCA 3,484,422.00"
-        data = self.app._match_linea_transferencia(linea)
+        data = match_linea_transferencia(linea)
         self.assertIsNotNone(data)
         self.assertEqual(data["Documento"], "91513843")
         self.assertEqual(data["Cuenta"], "603168089")
@@ -50,7 +33,7 @@ class TestMatchLineaTransferencia(unittest.TestCase):
     def test_formato_con_fecha_de_8_digitos(self):
         # Layout antiguo (con fecha): debe seguir funcionando.
         linea = "PEREZ LOPEZ JUAN 91234567 057014608031 20250115 12345 PAGO NOMINA BCA 1.234.567,00"
-        data = self.app._match_linea_transferencia(linea)
+        data = match_linea_transferencia(linea)
         self.assertIsNotNone(data)
         self.assertEqual(data["Documento"], "91234567")
         self.assertEqual(data["Cuenta"], "057014608031")
@@ -58,7 +41,7 @@ class TestMatchLineaTransferencia(unittest.TestCase):
 
     def test_tolera_ruido_ocr_y_acentos(self):
         linea = "HERNÁNDEZ  VÁSQUEZ  ANTONIO   91433543   0570146080313076  250331   PAGO  NOMINA  BCA   5,156,483.00"
-        data = self.app._match_linea_transferencia(linea)
+        data = match_linea_transferencia(linea)
         self.assertIsNotNone(data)
         self.assertEqual(data["Documento"], "91433543")
         self.assertEqual(data["Valor"], 5156483.0)
@@ -66,7 +49,7 @@ class TestMatchLineaTransferencia(unittest.TestCase):
     def test_etiqueta_destino_flexible(self):
         # "PAGO DE NOMINA" (sin BCA) también debe reconocerse.
         linea = "GARCIA PEREZ ANA 80092626 49656405430 PAGO DE NOMINA 403,544.00"
-        data = self.app._match_linea_transferencia(linea)
+        data = match_linea_transferencia(linea)
         self.assertIsNotNone(data)
         self.assertEqual(data["Documento"], "80092626")
         self.assertEqual(data["Valor"], 403544.0)
@@ -77,7 +60,7 @@ class TestMatchLineaTransferencia(unittest.TestCase):
             "00000000670833904 ORTEGON GOMEZ JIMMER EDUARDO 91513843 603168089 "
             "20250505 250430 PAGO NOMINA BCA 3,457,617.00 40"
         )
-        data = self.app._match_linea_transferencia(linea)
+        data = match_linea_transferencia(linea)
         self.assertIsNotNone(data)
         self.assertEqual(data["Documento"], "91513843")
         self.assertEqual(data["Valor"], 3457617.0)  # no 40 (la columna ods)
@@ -85,7 +68,7 @@ class TestMatchLineaTransferencia(unittest.TestCase):
     def test_extrae_fecha_de_factura(self):
         # La fecha = número de factura (YYMMDD) antes de "PAGO".
         linea = "ORTEGON GOMEZ JIMMER EDUARDO 91513843 603168089 250415 PAGO NOMINA BCA 2,447,732.00"
-        data = self.app._match_linea_transferencia(linea)
+        data = match_linea_transferencia(linea)
         self.assertEqual(data["Fecha"], pd.Timestamp("2025-04-15"))
         self.assertTrue(data["EsNomina"])
 
@@ -96,7 +79,7 @@ class TestMatchLineaTransferencia(unittest.TestCase):
             "00000000670833904 SOTO JARABA JOSE MIGUEL 1005179167 259152502 "
             "670F0422518500DZ 20250704 2,677,442.00"
         )
-        data = self.app._match_linea_transferencia(linea)
+        data = match_linea_transferencia(linea)
         self.assertIsNotNone(data)
         self.assertEqual(data["Documento"], "1005179167")
         self.assertEqual(data["Valor"], 2677442.0)
@@ -111,13 +94,10 @@ class TestMatchLineaTransferencia(unittest.TestCase):
             "",
             None,
         ):
-            self.assertIsNone(self.app._match_linea_transferencia(linea), msg=repr(linea))
+            self.assertIsNone(match_linea_transferencia(linea), msg=repr(linea))
 
 
 class TestReconcileData(unittest.TestCase):
-    def setUp(self):
-        self.app = _app()
-
     def _despr(self, filas):
         return pd.DataFrame(filas)
 
@@ -128,7 +108,7 @@ class TestReconcileData(unittest.TestCase):
         trans = pd.DataFrame([
             {"Documento": "91513843", "Cuenta": "603168089", "Valor": 3484422},
         ])
-        df_t, _ = self.app._reconcile_data(despr, trans, None)
+        df_t, _ = conciliar(despr, trans, None)
         estado = df_t.iloc[0]["Estado"]
         self.assertNotEqual(estado, "Transferencia no encontrada")
         self.assertEqual(estado, "OK")  # suma de netos == suma de transferencias
@@ -140,7 +120,7 @@ class TestReconcileData(unittest.TestCase):
         trans = pd.DataFrame([
             {"Documento": "91513843", "Cuenta": "603168089", "Valor": 3484422},
         ])
-        df_t, _ = self.app._reconcile_data(despr, trans, None)
+        df_t, _ = conciliar(despr, trans, None)
         self.assertEqual(df_t.iloc[0]["Estado"], "Valor no coincide")
 
     def test_sin_coincidencia_es_no_encontrada(self):
@@ -150,7 +130,7 @@ class TestReconcileData(unittest.TestCase):
         trans = pd.DataFrame([
             {"Documento": "91513843", "Cuenta": "603168089", "Valor": 3484422},
         ])
-        df_t, _ = self.app._reconcile_data(despr, trans, None)
+        df_t, _ = conciliar(despr, trans, None)
         self.assertEqual(df_t.iloc[0]["Estado"], "Transferencia no encontrada")
 
     def test_filtra_transferencias_de_otras_quincenas(self):
@@ -170,7 +150,7 @@ class TestReconcileData(unittest.TestCase):
             {"Documento": "91513843", "Cuenta": "603168089", "Valor": 3457617, "Fecha": pd.Timestamp("2025-04-30")},
             {"Documento": "91513843", "Cuenta": "603168089", "Valor": 3008274, "Fecha": pd.Timestamp("2025-05-15")},
         ])
-        df_t, _ = self.app._reconcile_data(despr, trans, None)
+        df_t, _ = conciliar(despr, trans, None)
         fila = df_t.iloc[0]
         # Solo las dos de abril quedan; su suma coincide con los netos -> OK.
         self.assertEqual(fila["Estado"], "OK")
@@ -184,7 +164,7 @@ class TestReconcileData(unittest.TestCase):
         trans = pd.DataFrame([
             {"Documento": "0000000", "Cuenta": "00603168089", "Valor": 3484422},
         ])
-        df_t, _ = self.app._reconcile_data(despr, trans, None)
+        df_t, _ = conciliar(despr, trans, None)
         self.assertEqual(df_t.iloc[0]["Estado"], "OK")
 
     def test_candidata_se_rescata_por_valor_y_se_descarta_la_ajena(self):
@@ -208,7 +188,7 @@ class TestReconcileData(unittest.TestCase):
             {"Documento": "1005179167", "Cuenta": "x", "Valor": 4787967,
              "Fecha": pd.NaT, "EsNomina": False},
         ])
-        df_t, _ = self.app._reconcile_data(despr, trans, None)
+        df_t, _ = conciliar(despr, trans, None)
         fila = df_t.iloc[0]
         self.assertEqual(fila["Estado"], "OK")
         self.assertEqual(sorted(fila["Valores_transferencia"]), [2677442, 4457982])
@@ -220,7 +200,7 @@ class TestReconcileData(unittest.TestCase):
         trans = pd.DataFrame([
             {"Documento": "91513843", "Cuenta": "603168089", "Valor": 3484422},
         ])
-        df_t, _ = self.app._reconcile_data(despr, trans, None)
+        df_t, _ = conciliar(despr, trans, None)
         fila = df_t.iloc[0]
         self.assertEqual(fila["Estado"], "Valor no coincide")
         self.assertEqual(fila["Diferencia"], 3457617 - 3484422)
@@ -228,9 +208,6 @@ class TestReconcileData(unittest.TestCase):
 
 class TestSeguridadSocial(unittest.TestCase):
     """Seguridad social: suma de IBC, devengados sin deduplicar y columna Diferencia."""
-
-    def setUp(self):
-        self.app = _app()
 
     def test_devengado_no_se_deduplica_y_suma_ibc_da_ok(self):
         # Dos quincenas con el MISMO devengado deben sumarse ambas (no deduplicar).
@@ -242,7 +219,7 @@ class TestSeguridadSocial(unittest.TestCase):
             {"cc": "63472356", "ibc": 2500950},
             {"cc": "63472356", "ibc": 2500950},
         ])
-        _, df_s = self.app._reconcile_data(despr, None, seg)
+        _, df_s = conciliar(despr, None, seg)
         fila = df_s.iloc[0]
         self.assertEqual(fila["Devengado"], 5001900)   # ambos devengados sumados
         self.assertEqual(fila["Estado"], "OK")          # 5001900 == 2500950+2500950
@@ -257,7 +234,7 @@ class TestSeguridadSocial(unittest.TestCase):
             {"cc": "1096185839", "ibc": 182210},
             {"cc": "1096185839", "ibc": 8274618},
         ])
-        _, df_s = self.app._reconcile_data(despr, None, seg)
+        _, df_s = conciliar(despr, None, seg)
         fila = df_s.iloc[0]
         self.assertEqual(fila["Estado"], "OK")
         self.assertEqual(fila["Diferencia"], 0)
@@ -267,7 +244,7 @@ class TestSeguridadSocial(unittest.TestCase):
             {"Identificacion": "111", "Neto": 1, "Devengado": 5001900, "Cuenta": "x"},
         ])
         seg = pd.DataFrame([{"cc": "111", "ibc": 5040619}])
-        _, df_s = self.app._reconcile_data(despr, None, seg)
+        _, df_s = conciliar(despr, None, seg)
         fila = df_s.iloc[0]
         self.assertEqual(fila["Estado"], "Devengado no coincide")
         self.assertEqual(fila["Diferencia"], 5001900 - 5040619)

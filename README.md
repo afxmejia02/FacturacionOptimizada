@@ -12,9 +12,9 @@ La interfaz se publica con **Streamlit** para poder compartirla sin instalar nad
 | Revisión | Carpeta | Qué compara |
 |----------|---------|-------------|
 | **Validación de pagos** (perfiles / equipos / servicios) | [`facturacion/`](facturacion/) | Conteos extraídos del PDF contra la planilla de Excel, cruzados por fecha. |
-| **Mapa de cargos – transferencias** | [`mapa-de-cargos/`](mapa-de-cargos/) | Neto de los desprendibles contra los valores transferidos. |
-| **Mapa de cargos – seguridad social** | [`mapa-de-cargos/`](mapa-de-cargos/) | Devengado de los desprendibles contra el IBC reportado. |
-| **Mapa de cargos – mano de obra** | [`mapa-de-cargos/`](mapa-de-cargos/) | Informe de Costo contra el registro de la ODS, campo por campo (resalta solo la celda inconsistente). |
+| **Mapa de cargos – transferencias** | [`nomina/`](nomina/) | Neto de los desprendibles contra los valores transferidos. |
+| **Mapa de cargos – seguridad social** | [`nomina/`](nomina/) | Devengado de los desprendibles contra el IBC reportado. |
+| **Mapa de cargos – mano de obra** | [`nomina/`](nomina/) | Informe de Costo contra el registro de la ODS, campo por campo (resalta solo la celda inconsistente). |
 
 ### Formatos: TABARCA e ITALCO
 
@@ -32,22 +32,29 @@ Cada revisión puede recibir documentos en dos formatos:
 
 ```
 .
-├── facturacion/        # Validación de pagos (PDF vs Excel)
-│   └── gui_validation_app.py
-├── mapa-de-cargos/     # Conciliación de nómina (desprendibles/transferencias/IBC)
-│   ├── gui_app.py
-│   └── mano_obra.py    # comparación Informe de Costo vs ODS (mano de obra)
-├── web_ui/             # Interfaz Streamlit (punto de entrega)
-│   ├── app.py          # entry point delgado
-│   ├── processing.py   # orquestación (reúsa los módulos de arriba)
-│   ├── excel_export.py # generación del Excel descargable
-│   └── rendering.py    # tablas HTML y formato de valores
+├── facturacion/          # Validación de pagos (PDF vs Excel)
+│   ├── normalizacion.py  #   formas canónicas de texto/fecha/cantidad
+│   ├── pdf.py            #   extracción de conteos del PDF
+│   └── histograma.py     #   lectura del Excel histórico
+├── nomina/               # Conciliación de nómina y mano de obra
+│   ├── formato.py        #   limpieza de números y líneas de PDF
+│   ├── desprendibles.py
+│   ├── transferencias.py
+│   ├── seguridad_social.py
+│   ├── conciliacion.py   #   cruce de los tres orígenes
+│   └── mano_obra.py      #   Informe de Costo vs ODS
+├── web_ui/               # Interfaz Streamlit (punto de entrega)
+│   ├── app.py            #   entry point (así está configurado el despliegue)
+│   ├── processing.py     #   orquestación (reúsa los paquetes de arriba)
+│   ├── excel_export.py
+│   └── rendering.py
 └── requirements.txt
 ```
 
-Las carpetas `facturacion/` y `mapa-de-cargos/` contienen además la lógica original
-en clases (`ServicesValidationApp`, `PayrollReconciliationApp`). La web reutiliza
-esos métodos sin abrir las ventanas de escritorio (tkinter).
+`facturacion/` y `nomina/` son paquetes de **lógica pura**, sin interfaz ni
+estado: se importan normalmente (`from nomina import conciliar`) y se pueden
+probar sueltos. Cada uno tiene su README con las decisiones de formato que no se
+deducen del código.
 
 ## Ejecutar localmente
 

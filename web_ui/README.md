@@ -1,8 +1,8 @@
 # Web UI (Streamlit)
 
 Interfaz **Streamlit** que reúne las revisiones del proyecto y reutiliza la
-lógica de `facturacion/gui_validation_app.py`, `mapa-de-cargos/gui_app.py` y
-`mapa-de-cargos/mano_obra.py` sin abrir ninguna ventana de escritorio.
+lógica de los paquetes `facturacion/` y `nomina/` y
+`nomina/mano_obra.py`.
 
 Herramientas disponibles: validación de pagos, mapa de cargos (transferencias /
 seguridad social) y **mapa de cargos – mano de obra** (Informe de Costo vs ODS).
@@ -18,7 +18,7 @@ seguridad social) y **mapa de cargos – mano de obra** (Informe de Costo vs ODS
 | `codigos.py` | Conjunto `excluded_codes` usado al filtrar perfiles. |
 
 El flujo es: `app.py` (UI) → `processing.py` (orquestación) → módulos de
-`facturacion/` y `mapa-de-cargos/` (extracción) → `rendering.py` / `excel_export.py`
+`facturacion/` y `nomina/` (extracción) → `rendering.py` / `excel_export.py`
 (presentación).
 
 ## Ejecutar
@@ -35,7 +35,7 @@ TABARCA/ITALCO).
 ## Notas
 
 - La app importa los módulos de las carpetas hermanas; **no muevas**
-  `facturacion/` ni `mapa-de-cargos/`.
+  `facturacion/` ni `nomina/`.
 - `processing.py` agrega la raíz del repo a `sys.path` para poder importarlos.
 - Variable de entorno opcional `VALIDATION_DEBUG=0` para silenciar los logs de
   depuración.

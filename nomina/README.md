@@ -1,167 +1,104 @@
-# Mapa de cargos – Conciliación de nómina
+# nomina
 
-Concilia los **desprendibles de nómina** contra dos fuentes:
+Conciliación de nómina y comparación de mano de obra. Sin interfaz: la UI vive
+en `web_ui/`.
 
-- **Transferencias / soportes bancarios** – ¿el neto pagado coincide con lo
-  transferido por persona?
-- **Seguridad social (IBC)** – ¿el devengado coincide con el IBC reportado?
+| Módulo | Qué hace |
+|---|---|
+| `formato.py` | Limpieza de números, documentos y líneas de texto de los PDF. |
+| `desprendibles.py` | Lee los desprendibles (PDF), formatos TABARCA e ITALCO. |
+| `transferencias.py` | Lee las transferencias bancarias y empareja sus líneas. |
+| `seguridad_social.py` | Lee las planillas de seguridad social (IBC). |
+| `conciliacion.py` | Cruza los tres orígenes (`conciliar`). |
+| `mano_obra.py` | Informe de Costo contra el registro de la ODS. |
 
-## Componente principal
+```python
+from nomina import procesar_desprendibles, procesar_transferencias, conciliar
+```
 
-`gui_app.py` define la clase **`PayrollReconciliationApp`**. Métodos clave que
-reutiliza la web:
+Concilia los desprendibles contra dos fuentes: **transferencias** (¿el neto
+pagado coincide con lo transferido?) y **seguridad social** (¿el devengado
+coincide con el IBC?).
 
-| Método | Rol |
-|--------|-----|
-| `_process_desprendibles(folder, formato)` | Extrae `Identificacion`, `Neto`, `Devengado`, `Cuenta`. Enruta a TABARCA o ITALCO. |
-| `_process_transferencia(folder, formato)` | Extrae los valores transferidos. Enruta a TABARCA o ITALCO. |
-| `procesar_seguridad_social(folder, formato)` | Extrae CC e IBC de las planillas. Enruta a TABARCA o ITALCO. |
-| `_reconcile_data(despr, trans, seg)` | Agrupa por cédula y compara sumas; devuelve `(df_transfers, df_seguridad)`. |
+## TABARCA vs ITALCO
 
-### Formatos TABARCA vs ITALCO
+Casi todas las funciones reciben `formato` (`"tabarca"` por defecto o
+`"italco"`) porque los PDF de cada cliente tienen otro layout:
 
-`_process_desprendibles` y `_process_transferencia` reciben un parámetro
-`formato` (`"tabarca"` por defecto, o `"italco"`):
+- **TABARCA** – desprendibles “Comprobante de Nómina”, con `Neto a Pagar $…`.
+- **ITALCO** – “Comprobante de pago de Nomina”: la cédula va tras `CC:` (si ese
+  campo viene vacío, se toma de `Documento <número>`), el neto tras
+  `Total Neto:` y el devengado tras `TOTAL INGRESOS`. Los importes se leen con o
+  sin `$`.
 
-- **TABARCA** – desprendibles tipo “Comprobante de Nómina” con `Neto a Pagar $…`.
-- **ITALCO** – desprendibles tipo “Comprobante de pago de Nomina”: la cédula va
-  tras `CC:` (y si ese campo viene **vacío**, se toma de `Documento <número>` de
-  la línea del trabajador), el neto tras `Total Neto:` y el **devengado** tras
-  `TOTAL INGRESOS`. Los importes se leen con o **sin símbolo `$`** (algunas
-  plantillas nuevas lo anteponen: `Total Neto: $3,675,627`). Los soportes de transferencia son la “consulta de pagos a terceros”
-  del banco (líneas tipo `<nombre> <doc> [cuenta] [fecha] [factura] PAGO NOMINA
-  BCA <valor>`). La seguridad social es la “Planilla Resumen” de aportes en
-  línea: el documento está en la columna 2 y el IBC de pensión en la columna 26
-  (página 1) o 27 (páginas siguientes).
+## Por qué el código está escrito así
 
-  El renglón de transferencia se extrae de forma **robusta y genérica**
-  (`_match_linea_transferencia`), no por un layout fijo: detecta el documento
-  (primer grupo de 5-15 dígitos), el valor (primer importe **después** de la
-  etiqueta de destino, para no confundirlo con la columna `ods`/consecutivo que
-  algunos soportes ponen al final), la cuenta (primer grupo de 9+ dígitos,
-  opcional) y la fecha de la **factura** (`YYMMDD` antes de `PAGO`, que indica la
-  quincena). Tolera la ausencia de columna de fecha de pago, distintos formatos
-  monetarios, espacios y ruido de OCR, y variantes de la etiqueta de destino
-  (basta que aparezca “NÓMINA”).
+Decisiones que no se deducen leyendo el código, y conviene entender antes de
+cambiarlo.
 
-  Las líneas se reconstruyen a partir de **palabras y coordenadas**
-  (`_lineas_desde_palabras`), no de `extract_text()`: algunos soportes traen una
-  columna “Productos” que se entrelaza con el nombre y pega el documento al
-  número de producto; reconstruir por `x` separa de nuevo los campos. Si una
-  página no trae renglones, hay un *fallback* a soporte tipo desprendible
-  (`CC:` / `Total Neto:`).
+### Las columnas se buscan por nombre, nunca por posición
 
-  El cruce es por documento o por cuenta (normalizando ceros de relleno) y,
-  además, **se filtra por periodo**: de cada desprendible se extrae
-  `Periodo: <inicio> al <fin>` y solo se conservan las transferencias **confiables**
-  (con etiqueta NÓMINA) cuya fecha de factura cae dentro de esa ventana. Así no se
-  suman quincenas/meses ajenos (p. ej. una transferencia de marzo o mayo al
-  conciliar abril).
+El layout de los Excel **cambia entre exportes mensuales**: distinto número y
+orden de columnas, e incluso distinta fila de encabezado (se ha visto la fila 10
+un mes y la 7 al siguiente). Por eso la fila del encabezado se **detecta**
+(primera fila que trae a la vez una columna de identificación y `Nombres`) y cada
+columna se localiza por **nombre normalizado** (mayúsculas, sin acentos, espacios
+colapsados) con una lista de alias.
 
-  Algunos soportes vienen en otro layout (la “consulta de pagos a terceros” del
-  banco) cuyos renglones **no traen etiqueta NÓMINA ni la fecha-factura de
-  quincena** (solo la fecha de consignación, que puede ser de otro mes). Esos
-  renglones se extraen como **candidatos** (`EsNomina=False`) y se aceptan **solo
-  si su valor coincide con un neto del desprendible** aún no cubierto por una
-  transferencia confiable; los importes que no estén en los netos se descartan
-  (pueden ser de otra quincena, o conceptos como prima). Así el pago real se
-  rescata aunque el renglón no traiga etiqueta/fecha, sin introducir falsos
-  positivos. Hay logs que explican cada “Transferencia no encontrada”, cada
-  transferencia descartada por periodo y cada candidata descartada por valor.
+Si una columna no aparece, el campo queda **vacío**. Es deliberado: preferible a
+tomar por error la columna que esté en esa posición.
 
-> Importante: el formato de los desprendibles debe coincidir con el de las
-> transferencias / seguridad social. La web pasa el mismo `formato` a todos los
-> parsers (desprendibles, transferencias y seguridad social).
+### Contra qué fechas se compara
 
-### Conciliación de seguridad social (devengado vs IBC)
+Las fechas de actividades de la ODS son la vigencia del **contrato**. Se comparan
+contra `Fecha Inicio` / `Fecha Vencimiento` del Informe — **no** contra
+`Fecha de Ingreso` / `Fecha de retiro`, que son del vínculo laboral y son otra
+cosa. Confundirlos genera diferencias falsas en masa.
 
-Para ambos formatos, `_reconcile_data` agrupa los desprendibles por cédula, suma
-el **devengado** y lo compara contra la **suma de los IBC** reportados en la
-planilla (misma lógica de suma que transferencias):
+### Documentos: cuidado con los números de Excel
 
-- `OK` – la suma de devengados coincide con la suma de IBC.
-- `Devengado no coincide` – las sumas difieren (o falta el IBC).
-- `Devengado no encontrado` – el desprendible no traía devengado.
+El documento puede llegar como texto (`1.096.198.448`) o como número. Basta un
+vacío en la columna para que pandas lea toda la columna como `float64`, y
+entonces `str(1096198448.0)` deja un `.0`; si solo se quitan los no dígitos, el
+documento **gana un `0` final** y no cruza con nadie. Por eso `solo_digitos` y
+`_os_comparable` convierten a `int` los float enteros. Igual con la OS: `37.0`
+daría `"0"`, porque se toma el último grupo de dígitos.
 
-> **Devengados repetidos:** en seguridad social los devengados **no se
-> deduplican** (`_normalizar_lista_completa`): dos quincenas con el mismo
-> devengado se suman ambas. (La deduplicación, vía `_normalizar_lista`, se aplica
-> solo al cruce de **transferencias**.)
+### El Informe ITALCO (la "progresión")
 
-> **IBC sumados:** todos los IBC de la cédula se suman antes de comparar, no se
-> exige un IBC único que coincida por sí solo (p. ej. `182.210 + 8.274.618 =
-> 8.456.828` cruza con un devengado de `8.456.828`).
+- Una sola hoja cuyo nombre incluye el mes (`PROGRESION JULIO 2025`), así que se
+  lee la primera hoja, no una llamada `Informe`.
+- La primera columna no tiene nombre y marca `ACTUAL` / `ANTERIOR` /
+  `DIFERENCIA` por persona. Solo interesan las de **DIFERENCIA**.
+- El salario diario **no** sale de la fila DIFERENCIA (ahí es un delta): se toma
+  el `Sueldo Base` de `ACTUAL` dividido entre 30 (convención de nómina
+  colombiana), que coincide con el `SalarioDiarioPesos` de la ODS.
+- El nombre viene como un único `Nombre Completo`; en la ODS se compara contra
+  `Nombres + Apellidos`.
+- La OS puede venir en `Perfil Contable` (`BCA OS 37 CONVENCIONAL`) o en una
+  columna `OS` con el número suelto. Se aceptan ambas y se comparan por su número
+  contra el `0DS37` de la ODS.
+- El cargo trae el marcador `(PROGRE)` que la ODS no tiene, y expresa
+  alternativas separadas por `/` (`ANDAMIERO B / D8`). Se ignora el marcador y
+  basta que **una** alternativa coincida.
 
-Tanto transferencias como seguridad social incluyen una columna **`Diferencia`**:
-neto − transferencia en el primero, devengado − IBC en el segundo (lo ausente
-cuenta como 0). Aplica a los formatos TABARCA e ITALCO.
+### El resultado son listas, no textos
 
-### Mano de obra (Informe de Costo vs ODS)
+`comparar_mano_obra` devuelve una fila por persona y, en cada campo, una lista:
+`[valor]` si Informe y ODS coinciden, `[informe, ods]` si difieren. Esa lista es
+la única fuente de verdad: la web resalta la celda cuando tiene dos elementos. No
+hay columna de "estado".
 
-`mano_obra.py` define **`comparar_mano_obra(informe, ods)`**, que cruza el
-**Informe de Costo** (nómina) contra el registro de la **ODS** (empleados del
-contrato) por número de documento. Cada parámetro acepta una ruta/buffer o una
-**lista** de varios Excel por lado: cada archivo se lee por separado
-(`_leer_y_concatenar`) y se concatena antes de cruzar, de modo que una persona
-de cualquier Informe puede emparejarse con cualquier ODS. Ambos Excel traen la misma información bajo
-nombres de columna distintos. El mapeo (`MAPEO_COLUMNAS`, con tipo de
-comparación) es:
+### Transferencias: por qué tanta tolerancia al ruido
 
-| Concepto | Informe | ODS | Tipo |
-|----------|---------|-----|------|
-| Documento (clave) | `Identificación` | `NumeroDocumento` | dígitos |
-| OS | derivada de `Nombre Centro Costo` (`…Os050…`→50) | `No_de_orden_de_servicio_conocido_por_el_contratista` | número |
-| Nombres / Apellidos | `Nombres` / `Apellidos` | `Nombres` / `Apellidos` | texto |
-| Cargo | `Cargo` | `CargoContratoLaboral` | texto |
-| Fecha Inicio | `Fecha Inicio` | `Fecha_de_inicio_de_actividades_…` | fecha |
-| Fecha Vencimiento | `Fecha Vencimiento` | `Fecha_fin_de_actividades_…` | fecha |
-| Días Trabajados | `Días Trabajados` | `DiasTrabajadosEnMes` | número |
-| Salario | `Salario Diario Contratado` | `SalarioDiarioPesos` | moneda |
+Los soportes bancarios llegan escaneados y con OCR. La etiqueta de destino
+(`PAGO NOMINA BCA`) solo sirve como señal de que la línea es un pago; el cruce
+nunca depende de su forma exacta y tolera confusiones típicas (O/0, I/1, A/4).
+El cruce se hace por documento **o** por cuenta, y solo se marca "no encontrada"
+cuando de verdad no hay coincidencia.
 
-> **Fechas:** los campos de actividades de la ODS son la vigencia del
-> **contrato**, por eso se comparan contra `Fecha Inicio` / `Fecha Vencimiento`
-> del Informe, **no** contra `Fecha de Ingreso` / `Fecha de retiro` (vínculo
-> laboral, un concepto distinto que generaba falsos positivos).
+## Pruebas
 
-> **Salario:** se compara como `moneda` (valor numérico normalizado, tolerante a
-> `$`, separadores de miles/decimales y espacios) y se muestra en pesos
-> colombianos (`$120.000`). Cuando difiere, la celda lista ambos: **Informe** y
-> **Lista ODS**. Las utilidades `normalizar_moneda` / `formatear_cop` son
-> reutilizables.
-
-El Informe se lee de la hoja `Informe` con el encabezado real en la fila 10; las
-columnas usadas se localizan **por nombre** (normalizado: mayúsculas, sin acentos
-y espacios colapsados, con alias) en vez de por posición, porque el layout varía
-entre exportes mensuales (distinto número y orden de columnas). Si una columna
-requerida no existe en ese archivo (p. ej. el exporte de abril no trae
-`Días Trabajados` ni `Salario Diario Contratado`), el campo queda **vacío** en vez
-de tomar por error otra columna en esa posición. El resultado es un DataFrame
-donde cada campo es una **lista**: `[valor]` si ambos coinciden,
-`[valor_informe, valor_ods]` si difieren. La comparación normaliza por tipo
-(texto sin acentos, fecha por día, número entero, moneda), de modo que
-`2025-06-08 00:00:00` y `2025-06-08` se consideran iguales. **No hay columna de
-estado/observaciones**: el resaltado por celda (listas de dos elementos) es el
-único indicador de inconsistencia.
-
-## Uso
-
-A través de la interfaz Streamlit (ver el [README raíz](../README.md)):
-herramientas **“Mapa de cargos - transferencias”**,
-**“Mapa de cargos - seguridad social”** y **“Mapa de cargos - mano de obra”**.
-En transferencias se elige el formato (TABARCA / ITALCO). En mano de obra se
-suben uno o varios Excel por lado (Informe y ODS) y se resalta **solo la celda**
-del campo inconsistente, no toda la fila. Todos los resultados se descargan como Excel.
-
-## Archivos
-
-| Archivo | Descripción |
-|---------|-------------|
-| `gui_app.py` | Lógica de conciliación (transferencias / seguridad social) + GUI de escritorio. |
-| `mano_obra.py` | Comparación Informe de Costo vs ODS (mano de obra). |
-| `main.ipynb` | Notebook de referencia (incluye la exploración del formato ITALCO). |
-| `ssocial.ipynb` | Notebook de exploración de seguridad social. |
-| `mano-obra.ipynb` | Notebook de exploración de la comparación de mano de obra. |
-| `requirements.txt` | Dependencias del módulo. |
-
-> La carpeta `docs/` contiene documentos reales de nómina y está excluida por
-> `.gitignore`; no se versiona.
+```bash
+python -m unittest discover -s nomina -p "test_*.py" -t .
+```

@@ -1,4 +1,4 @@
-"""Pruebas de extracción de equipos (``_extraer_valor_etiqueta``).
+"""Pruebas de extracción de equipos (``extraer_valor_etiqueta``).
 
 Se ejecutan sin dependencias extra:  ``python -m unittest test_equipos``
 
@@ -7,39 +7,23 @@ de la orden de servicio) hacía que se tomara la celda equivocada como valor del
 equipo (devolvía "EQUIPO:" en vez del nombre real).
 """
 import datetime as dt
-import importlib.util
 import os
+import sys
 import tempfile
 import unittest
 
 import pandas as pd
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-
-def _load(name, filename):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-validator = _load("validator_mod", "gui_validation_app.py")
-
-
-def _app():
-    app = validator.ServicesValidationApp.__new__(validator.ServicesValidationApp)
-    app.debug_mode = False
-    return app
+import facturacion as fact
+from facturacion.pdf import _ETIQUETAS_EQUIPO, _ETIQUETAS_SERVICIO
 
 
 ETIQUETAS = ("equipo", "tipo de equipo", "tipo equipo")
 
 
 class TestExtraerValorEtiqueta(unittest.TestCase):
-    def setUp(self):
-        self.app = _app()
-
     def test_no_confunde_equipos_en_descripcion(self):
         # La celda de descripción contiene "EQUIPOS"; la etiqueta real es "EQUIPO:".
         row = [
@@ -48,46 +32,43 @@ class TestExtraerValorEtiqueta(unittest.TestCase):
             "ALISTAMIENTO, EJECUCION ... MONTAJE DE EQUIPOS EN LA REFINERIA ...",
             None, "EQUIPO:", "CAMIÓN-GRÚA DE 10 TON (10 H)", "",
         ]
-        valor = self.app._extraer_valor_etiqueta([[row]], ETIQUETAS)
+        valor = fact.extraer_valor_etiqueta([[row]], ETIQUETAS)
         self.assertEqual(valor, "CAMIÓN-GRÚA DE 10 TON (10 H)")
 
     def test_etiqueta_y_valor_en_misma_celda(self):
         row = ["", "EQUIPO: CAMIÓN-GRÚA DE 10 TON (10 H)", ""]
-        valor = self.app._extraer_valor_etiqueta([[row]], ETIQUETAS)
+        valor = fact.extraer_valor_etiqueta([[row]], ETIQUETAS)
         self.assertEqual(valor, "CAMIÓN-GRÚA DE 10 TON (10 H)")
 
     def test_variante_tipo_de_equipo(self):
         row = ["TIPO DE EQUIPO:", "MOTOSOLDADOR HASTA 400 AMP (24 H)"]
-        valor = self.app._extraer_valor_etiqueta([[row]], ETIQUETAS)
+        valor = fact.extraer_valor_etiqueta([[row]], ETIQUETAS)
         self.assertEqual(valor, "MOTOSOLDADOR HASTA 400 AMP (24 H)")
 
     def test_conserva_texto_tras_parentesis_si_es_continuacion(self):
         # "para bridas..." es continuación legítima del nombre: NO debe recortarse.
         nombre = "Torno portátil orbital 10H (Diurno / Nocturno) para bridas >4 NPS <=\n48 NPS"
-        limpio = self.app._limpiar_nombre_equipo(nombre)
+        limpio = fact.limpiar_nombre_equipo(nombre)
         self.assertIn("para bridas", limpio)
         self.assertIn("48 NPS", limpio)
 
     def test_recorta_fragmento_inicial_duplicado(self):
         # "Motoso" es el inicio duplicado del propio nombre (artefacto): se recorta.
-        limpio = self.app._limpiar_nombre_equipo("MOTOSOLDADOR HASTA 400 AMP (24 H) Motoso")
+        limpio = fact.limpiar_nombre_equipo("MOTOSOLDADOR HASTA 400 AMP (24 H) Motoso")
         self.assertEqual(limpio, "MOTOSOLDADOR HASTA 400 AMP (24 H)")
 
     def test_sin_etiqueta_devuelve_none(self):
         row = ["EMPRESA:", "Consorcio Tabarca", "ORDEN DE SERVICIO No 058"]
-        self.assertIsNone(self.app._extraer_valor_etiqueta([[row]], ETIQUETAS))
+        self.assertIsNone(fact.extraer_valor_etiqueta([[row]], ETIQUETAS))
 
 
 class TestExtraccionUnificada(unittest.TestCase):
     """Equipos y servicios comparten estructura; un solo extractor sirve a ambos."""
 
-    def setUp(self):
-        self.app = _app()
-
     def test_reconoce_etiqueta_servicio(self):
         row = ["", "SERVICIO:", "GAMMAGRAFÍAS (RADIOGRAFÍA CONVENCIONAL)", ""]
-        etiquetas = self.app._ETIQUETAS_EQUIPO + self.app._ETIQUETAS_SERVICIO
-        valor = self.app._extraer_valor_etiqueta([[row]], etiquetas)
+        etiquetas = _ETIQUETAS_EQUIPO + _ETIQUETAS_SERVICIO
+        valor = fact.extraer_valor_etiqueta([[row]], etiquetas)
         self.assertEqual(valor, "GAMMAGRAFÍAS (RADIOGRAFÍA CONVENCIONAL)")
 
     def test_extraer_registros_por_etiqueta(self):
@@ -97,8 +78,8 @@ class TestExtraccionUnificada(unittest.TestCase):
             ["ITEM", "FECHA", "IDENTIFICACION", "CANTIDAD", "UBICACIÓN"],
             ["1", "29 de mayo de 2026", "PTSC-001", "3", "GRB"],
         ]
-        etiquetas = self.app._ETIQUETAS_EQUIPO + self.app._ETIQUETAS_SERVICIO
-        registros = self.app._extraer_registros_etiqueta([tabla], etiquetas)
+        etiquetas = _ETIQUETAS_EQUIPO + _ETIQUETAS_SERVICIO
+        registros = fact.extraer_registros_etiqueta([tabla], etiquetas)
         self.assertEqual(len(registros), 1)
         self.assertEqual(registros[0]["TIPO DE EQUIPO"], "GAMMAGRAFÍAS (RADIOGRAFÍA CONVENCIONAL)")
         self.assertEqual(registros[0]["CANTIDAD"], 3.0)
@@ -106,9 +87,6 @@ class TestExtraccionUnificada(unittest.TestCase):
 
 class TestHistogramaPorSeccion(unittest.TestCase):
     """Lectura del histograma en largo, filtrada por sección y conservando ceros."""
-
-    def setUp(self):
-        self.app = _app()
 
     def _hist_xlsx(self, fecha):
         # Dos secciones: 5.5 (equipos) y 5.6 (servicios). Incluye un ítem en 0.
@@ -128,87 +106,78 @@ class TestHistogramaPorSeccion(unittest.TestCase):
         fecha = dt.datetime(2026, 5, 25)
         path = self._hist_xlsx(fecha)
         # Solo sección 5.6 (servicios): no debe traer el equipo de 5.5.
-        largo = self.app._leer_histograma_largo(path, ["5.6"])
+        largo = fact.leer_histograma_largo(path, ["5.6"])
         claves = set(largo["CLAVE"])
-        self.assertIn(self.app._clave_equipo("GAMMAGRAFÍAS (RADIOGRAFÍA CONVENCIONAL)"), claves)
-        self.assertIn(self.app._clave_equipo("Radiografía digital computarizada"), claves)  # cero conservado
-        self.assertNotIn(self.app._clave_equipo("CAMIÓN-GRÚA DE 10 TON (10 H)"), claves)
+        self.assertIn(fact.clave_equipo("GAMMAGRAFÍAS (RADIOGRAFÍA CONVENCIONAL)"), claves)
+        self.assertIn(fact.clave_equipo("Radiografía digital computarizada"), claves)  # cero conservado
+        self.assertNotIn(fact.clave_equipo("CAMIÓN-GRÚA DE 10 TON (10 H)"), claves)
         # El valor se toma tal cual (sin conversión de unidades).
-        gamma = largo[largo["CLAVE"] == self.app._clave_equipo("GAMMAGRAFÍAS (RADIOGRAFÍA CONVENCIONAL)")]
+        gamma = largo[largo["CLAVE"] == fact.clave_equipo("GAMMAGRAFÍAS (RADIOGRAFÍA CONVENCIONAL)")]
         self.assertEqual(gamma["VALOR"].iloc[0], 5)
 
 
 class TestParsearCantidad(unittest.TestCase):
     """La cantidad de la planilla admite miles/decimales en cualquier convención."""
 
-    def setUp(self):
-        self.app = _app()
-
     def test_coma_decimal_sin_separador_de_miles(self):
         # Regresión: "1452,6" daba 145 (se tomaban solo 3 dígitos).
-        self.assertEqual(self.app._parsear_cantidad("1452,6"), 1452.6)
-        self.assertEqual(self.app._parsear_cantidad("1452"), 1452.0)
+        self.assertEqual(fact.parsear_cantidad("1452,6"), 1452.6)
+        self.assertEqual(fact.parsear_cantidad("1452"), 1452.0)
 
     def test_ambas_convenciones(self):
-        self.assertEqual(self.app._parsear_cantidad("1.452,6"), 1452.6)   # colombiana
-        self.assertEqual(self.app._parsear_cantidad("1,452.6"), 1452.6)   # anglosajona
-        self.assertEqual(self.app._parsear_cantidad("1.452.678"), 1452678.0)
-        self.assertEqual(self.app._parsear_cantidad("0,33"), 0.33)
-        self.assertEqual(self.app._parsear_cantidad("3"), 3.0)
+        self.assertEqual(fact.parsear_cantidad("1.452,6"), 1452.6)   # colombiana
+        self.assertEqual(fact.parsear_cantidad("1,452.6"), 1452.6)   # anglosajona
+        self.assertEqual(fact.parsear_cantidad("1.452.678"), 1452678.0)
+        self.assertEqual(fact.parsear_cantidad("0,33"), 0.33)
+        self.assertEqual(fact.parsear_cantidad("3"), 3.0)
 
     def test_vacios(self):
-        self.assertIsNone(self.app._parsear_cantidad(None))
-        self.assertIsNone(self.app._parsear_cantidad("---"))
+        self.assertIsNone(fact.parsear_cantidad(None))
+        self.assertIsNone(fact.parsear_cantidad("---"))
 
 
 class TestParsearCantidad(unittest.TestCase):
     """Cantidades de planilla: miles/decimales en distintas convenciones."""
 
-    def setUp(self):
-        self.app = _app()
-
     def test_convencion_colombiana(self):
         # Punto = miles, coma = decimal (misma convención en PDF y Excel).
-        self.assertEqual(self.app._parsear_cantidad("3.139 m³"), 3139.0)
-        self.assertEqual(self.app._parsear_cantidad("3.139,00"), 3139.0)
-        self.assertEqual(self.app._parsear_cantidad("1.452,6"), 1452.6)
-        self.assertEqual(self.app._parsear_cantidad("153,67 Kg"), 153.67)
-        self.assertEqual(self.app._parsear_cantidad("7,7 m³"), 7.7)
-        self.assertEqual(self.app._parsear_cantidad("1.452.678"), 1452678.0)
-        self.assertEqual(self.app._parsear_cantidad("3"), 3.0)
-        self.assertIsNone(self.app._parsear_cantidad("---"))
+        self.assertEqual(fact.parsear_cantidad("3.139 m³"), 3139.0)
+        self.assertEqual(fact.parsear_cantidad("3.139,00"), 3139.0)
+        self.assertEqual(fact.parsear_cantidad("1.452,6"), 1452.6)
+        self.assertEqual(fact.parsear_cantidad("153,67 Kg"), 153.67)
+        self.assertEqual(fact.parsear_cantidad("7,7 m³"), 7.7)
+        self.assertEqual(fact.parsear_cantidad("1.452.678"), 1452678.0)
+        self.assertEqual(fact.parsear_cantidad("3"), 3.0)
+        self.assertIsNone(fact.parsear_cantidad("---"))
 
 
 class TestObservacionPerfil(unittest.TestCase):
     """Parseo de la columna Observaciones: recategorización + 'E y F' + 'NO FACTURABLE'."""
 
-    def setUp(self):
-        self.app = _app()
-
     def test_marcadores_individuales(self):
-        self.assertEqual(self.app._parsear_observacion_perfil("E Y F"), (None, True, False, False))
-        self.assertEqual(self.app._parsear_observacion_perfil("NO FACTURABLE"), (None, False, True, False))
+        self.assertEqual(fact.parsear_observacion_perfil("E Y F"), (None, True, False, False))
+        self.assertEqual(fact.parsear_observacion_perfil("NO FACTURABLE"), (None, False, True, False))
         # El patrón real trae "SE FACTURA" en medio y un salto de línea.
         self.assertEqual(
-            self.app._parsear_observacion_perfil("RECATEGORIZADO SE\nFACTURA COMO B4"),
+            fact.parsear_observacion_perfil("RECATEGORIZADO SE\nFACTURA COMO B4"),
             ("B4", False, False, False),
         )
 
     def test_24h_en_observaciones(self):
         for valor in ("24", "24H", "24HRS", "24 HORAS", "JORNADA 24 HORAS"):
-            rec, ef, nf, es24 = self.app._parsear_observacion_perfil(valor)
+            rec, ef, nf, es24 = fact.parsear_observacion_perfil(valor)
             self.assertTrue(es24, msg=repr(valor))
         # Sin "24" -> es_24h False (no debe confundirse con otros textos).
-        self.assertFalse(self.app._parsear_observacion_perfil("RECATEGORIZADO SE FACTURA COMO B4")[3])
+        self.assertFalse(fact.parsear_observacion_perfil("RECATEGORIZADO SE FACTURA COMO B4")[3])
 
     def test_coexisten_en_cualquier_orden(self):
         # Recategorización + "E y F" juntos: no importa el orden.
         self.assertEqual(
-            self.app._parsear_observacion_perfil("RECATEGORIZADO SE FACTURA COMO E11 E Y F"),
+            fact.parsear_observacion_perfil("RECATEGORIZADO SE FACTURA COMO E11 E Y F"),
             ("E11", True, False, False),
         )
         self.assertEqual(
-            self.app._parsear_observacion_perfil("E Y F RECATEGORIZADO SE FACTURA COMO D7"),
+            fact.parsear_observacion_perfil("E Y F RECATEGORIZADO SE FACTURA COMO D7"),
             ("D7", True, False, False),
         )
 
@@ -216,19 +185,19 @@ class TestObservacionPerfil(unittest.TestCase):
         # Caso real ("13. Registro PLanillas" p.21): recat + "- E Y F" con salto de
         # línea. Debe dar el nivel recategorizado y es_ef=True (cuenta 1, no 1/3).
         self.assertEqual(
-            self.app._parsear_observacion_perfil("RECATEGORIZADO\nSE FACTURA COMO B4 - E Y F"),
+            fact.parsear_observacion_perfil("RECATEGORIZADO\nSE FACTURA COMO B4 - E Y F"),
             ("B4", True, False, False),
         )
 
     def test_recat_con_ruido_antes_del_nivel(self):
         # Robustez: "COMO NIVEL/PERFIL <nivel>" (palabra extra antes del nivel).
-        self.assertEqual(self.app._parsear_observacion_perfil("RECATEGORIZADO COMO NIVEL B4")[0], "B4")
-        self.assertEqual(self.app._parsear_observacion_perfil("RECATEGORIZADO COMO PERFIL C6 - E Y F")[0], "C6")
+        self.assertEqual(fact.parsear_observacion_perfil("RECATEGORIZADO COMO NIVEL B4")[0], "B4")
+        self.assertEqual(fact.parsear_observacion_perfil("RECATEGORIZADO COMO PERFIL C6 - E Y F")[0], "C6")
 
     def test_vacios_y_no_reconocidos(self):
         for valor in (None, "", "   ", "TRASLADO"):
             self.assertEqual(
-                self.app._parsear_observacion_perfil(valor), (None, False, False, False), msg=repr(valor)
+                fact.parsear_observacion_perfil(valor), (None, False, False, False), msg=repr(valor)
             )
 
 
