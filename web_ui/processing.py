@@ -57,6 +57,26 @@ def _debug_print(message: str) -> None:
 # Perfiles (PDF vs Excel by date)
 # ---------------------------------------------------------------------------
 
+#: Filas del encabezado de la planilla: "Nivel/ Perfil" y la fecha van en la 6,
+#: y "CEDULA | TRABAJADOR | CARGO" en la 7. Los datos empiezan en la 8.
+_FILAS_ENCABEZADO_PLANILLA = (6, 7)
+
+
+def _indice_columna_cargo(tabla) -> int | None:
+    """Indice de la columna CARGO de la planilla, o ``None`` si no aparece.
+
+    Solo se miran las filas del encabezado: mas abajo esta el "CARGO:" del
+    responsable de la orden de servicio, que es otra cosa.
+    """
+    for fila in _FILAS_ENCABEZADO_PLANILLA:
+        if fila >= len(tabla):
+            continue
+        for i, celda in enumerate(tabla[fila]):
+            if celda and normalizar_busqueda(celda).replace(" ", "") == "cargo":
+                return i
+    return None
+
+
 def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
     registros = []
     excluded_profiles = {"none", "observaciones"}
@@ -86,6 +106,13 @@ def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
                         continue
 
                     idx_perfil = header_norm.index("nivel/perfil")
+                    # Los perfiles con nombre largo no caben en "Nivel/Perfil" y
+                    # el nombre real queda en "Cargo" (ver _aplicar_respaldo_cargo).
+                    # El encabezado ocupa DOS filas: "Nivel/ Perfil" esta en la 6
+                    # y "CEDULA | TRABAJADOR | CARGO" en la 7, asi que hay que
+                    # mirar ambas. No se busca mas abajo para no confundirlo con
+                    # el "CARGO:" del responsable, que va en la cabecera del acta.
+                    idx_cargo = _indice_columna_cargo(tabla)
                     fecha_detectada = normalizar_fecha(header[-1]) if header else None
                     if fecha_detectada is None:
                         continue
@@ -137,22 +164,29 @@ def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
                         # persona, salvo el marcador "E y F" (cuenta como 1 unidad).
                         es_24h = ("24" in tabla_info) or es_24h_obs
                         cantidad = 1 / 3 if (es_24h and not es_ef) else 1
+                        cargo = row[idx_cargo] if idx_cargo is not None and len(row) > idx_cargo else None
                         registros.append(
                             {
                                 "FECHA": fecha_detectada,
                                 "PERFIL_NORM": perfil_norm,
                                 "Nivel/Perfil": perfil_norm,
+                                "CARGO_NORM": normalizar_perfil(cargo) if cargo else None,
                                 "PDF": cantidad,
                             }
                         )
 
     if not registros:
         _debug_print("No se extrajeron registros de perfiles por fecha desde el PDF.")
-        return pd.DataFrame(columns=["FECHA", "PERFIL_NORM", "Nivel/Perfil", "PDF"])
+        return pd.DataFrame(
+            columns=["FECHA", "PERFIL_NORM", "Nivel/Perfil", "CARGO_NORM", "PDF"]
+        )
 
     df = pd.DataFrame(registros)
     _debug_print(f"Registros de perfiles por fecha extraidos: {len(df)}")
-    return df.groupby(["FECHA", "PERFIL_NORM", "Nivel/Perfil"], as_index=False)["PDF"].sum()
+    # El cargo se conserva por grupo (first) para poder usarlo como respaldo.
+    return df.groupby(
+        ["FECHA", "PERFIL_NORM", "Nivel/Perfil"], as_index=False, dropna=False
+    ).agg(PDF=("PDF", "sum"), CARGO_NORM=("CARGO_NORM", "first"))
 
 
 def _extract_excel_perfiles_by_date(excel_path: str) -> pd.DataFrame:
@@ -206,6 +240,52 @@ def _extract_excel_perfiles_by_date(excel_path: str) -> pd.DataFrame:
     return df_largo.rename(columns={"VALOR": "Excel"})
 
 
+def _clave_perfil(valor) -> str:
+    """Forma canonica para decidir si dos nombres de perfil son el mismo."""
+    return re.sub(r"\s+", " ", str(valor)).strip().casefold()
+
+
+def _aplicar_respaldo_cargo(df_pdf: pd.DataFrame, df_excel: pd.DataFrame) -> pd.DataFrame:
+    """Reasigna al nombre del Cargo los perfiles del PDF que no estan en el Excel.
+
+    Un perfil de nombre largo (``Inspector certificado: API/ASME NACIONAL``) no
+    cabe en la columna ``Nivel/Perfil`` del PDF y llega partido
+    (``Inspector certificad o:``), mientras el nombre completo si esta en
+    ``Cargo``. Sin esto aparecen dos filas descuadradas: el nombre partido con
+    PDF=1/Excel=0 y el completo con PDF=0/Excel=1.
+
+    Solo se toca lo que **no** cruza por ``Nivel/Perfil`` y cuyo Cargo coincide
+    exactamente (ignorando mayusculas y espacios repetidos) con un nombre del
+    Excel, asi que un perfil que ya cruzaba no cambia.
+    """
+    if df_pdf.empty or "CARGO_NORM" not in df_pdf.columns or df_excel.empty:
+        return df_pdf
+
+    del_excel = {_clave_perfil(v): v for v in df_excel["PERFIL_NORM"]}
+    del_pdf = {_clave_perfil(v) for v in df_pdf["PERFIL_NORM"]}
+
+    df_pdf = df_pdf.copy()
+    for pos, fila in df_pdf.iterrows():
+        if _clave_perfil(fila["PERFIL_NORM"]) in del_excel:
+            continue  # ya cruza por Nivel/Perfil
+        cargo = fila.get("CARGO_NORM")
+        if not isinstance(cargo, str) or not cargo.strip():
+            continue
+        clave = _clave_perfil(cargo)
+        if clave in del_excel and clave not in del_pdf:
+            nombre = del_excel[clave]
+            _debug_print(
+                f"Perfil '{fila['PERFIL_NORM']}' no esta en el Excel; se cruza "
+                f"por su Cargo '{nombre}'."
+            )
+            df_pdf.at[pos, "PERFIL_NORM"] = nombre
+            df_pdf.at[pos, "Nivel/Perfil"] = nombre
+
+    return df_pdf.groupby(
+        ["FECHA", "PERFIL_NORM", "Nivel/Perfil"], as_index=False
+    )["PDF"].sum()
+
+
 def build_perfiles_table(pdf_sources, excel_sources) -> pd.DataFrame:
     """Cross PDF profile counts against the Excel history, grouped by date.
 
@@ -249,11 +329,13 @@ def build_perfiles_table(pdf_sources, excel_sources) -> pd.DataFrame:
             return empty
 
         df_pdf = pd.concat(partes_pdf, ignore_index=True).groupby(
-            ["FECHA", "PERFIL_NORM", "Nivel/Perfil"], as_index=False
-        )["PDF"].sum()
+            ["FECHA", "PERFIL_NORM", "Nivel/Perfil"], as_index=False, dropna=False
+        ).agg(PDF=("PDF", "sum"), CARGO_NORM=("CARGO_NORM", "first"))
         df_excel = pd.concat(partes_excel, ignore_index=True).groupby(
             ["FECHA", "PERFIL_NORM", "Nivel/Perfil"], as_index=False
         )["Excel"].sum()
+
+        df_pdf = _aplicar_respaldo_cargo(df_pdf, df_excel)
 
         df_merge = df_pdf.merge(
             df_excel, on=["FECHA", "PERFIL_NORM", "Nivel/Perfil"], how="outer"

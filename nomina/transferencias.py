@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import os
+import re
+import statistics
+
 import pandas as pd
 import pdfplumber
-import re
 
 from .formato import _limpiar_numero, _normalizar_linea_ocr, _parsear_linea
 from .depuracion import log as _log
@@ -268,7 +270,27 @@ def match_linea_transferencia(linea):
     }
 
 
-def _lineas_desde_palabras(page, x_tolerance=1.5, y_tolerance=3.0):
+#: Tolerancias de agrupacion como fraccion del tamano de letra. Equivalen a los
+#: valores fijos historicos (1.5 y 3.0) en una pagina de 4.2 pt, que es el tamano
+#: de los soportes que ya funcionaban.
+_FRAC_TOL_X = 1.5 / 4.2
+_FRAC_TOL_Y = 3.0 / 4.2
+
+
+def _tolerancias(page):
+    """Tolerancias de agrupacion ajustadas al tamano de letra de la pagina.
+
+    No pueden ser fijas: hay soportes generados a ~2 pt, donde dos filas
+    distintas de la tabla estan a solo ~2.8 pt. Con una tolerancia vertical de
+    3.0 esas dos filas se funden en una sola linea con los caracteres
+    entrelazados (``OO DD RR II...``) y no se reconoce ningun pago.
+    """
+    tamanos = [c["size"] for c in page.chars if c.get("size")]
+    tam = statistics.median(tamanos) if tamanos else 4.2
+    return max(0.3, tam * _FRAC_TOL_X), max(0.5, tam * _FRAC_TOL_Y)
+
+
+def _lineas_desde_palabras(page, x_tolerance=None, y_tolerance=None):
     """Reconstruye las líneas de la página a partir de las palabras y sus
     coordenadas (x, y), no de ``extract_text()``.
 
@@ -278,10 +300,22 @@ def _lineas_desde_palabras(page, x_tolerance=1.5, y_tolerance=3.0):
     rompe la lectura del documento. Agrupando por línea (``top``) y ordenando
     por ``x0`` se recuperan los campos como tokens separados.
 
+    Las tolerancias se derivan del tamaño de letra (ver ``_tolerancias``) salvo
+    que se indiquen. La vertical se pasa **también** a ``extract_words``: con su
+    valor por defecto, pdfplumber ya habria fundido dos filas en una palabra
+    antes de que aqui se pudieran separar.
+
     Si no hay palabras (página sin capa de texto), cae a ``extract_text()``.
     """
+    tol_x, tol_y = _tolerancias(page)
+    if x_tolerance is None:
+        x_tolerance = tol_x
+    if y_tolerance is None:
+        y_tolerance = tol_y
     try:
-        words = page.extract_words(x_tolerance=x_tolerance, use_text_flow=False)
+        words = page.extract_words(
+            x_tolerance=x_tolerance, y_tolerance=y_tolerance, use_text_flow=False
+        )
     except Exception:
         words = []
     if not words:
