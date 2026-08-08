@@ -8,6 +8,7 @@ comparison logic lives in:
 
 Run locally with:  ``streamlit run app.py``
 """
+#prueba macos
 from __future__ import annotations
 
 import base64
