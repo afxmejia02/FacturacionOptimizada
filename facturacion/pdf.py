@@ -8,6 +8,7 @@ import pandas as pd
 import pdfplumber
 
 from .depuracion import debug as _debug
+from .paginas import iter_paginas
 from .normalizacion import (
     _buscar_indice_columna,
     _normalizar_texto_equipo,
@@ -97,7 +98,7 @@ def extraer_perfiles_pdf(path_planilla):
     fecha_reporte = None
 
     with pdfplumber.open(path_planilla) as pdf:
-        for page in pdf.pages:
+        for page in iter_paginas(pdf):
             for tabla in page.extract_tables() or []:
                 if not tabla or len(tabla) <= 7:
                     continue
@@ -257,7 +258,7 @@ def _extraer_conteo_pdf_detallado(path_planilla, tipo_formato):
 
     registros = []
     with pdfplumber.open(path_planilla) as pdf:
-        for page in pdf.pages:
+        for page in iter_paginas(pdf):
             tablas = page.extract_tables() or []
             regs = extraer_registros_etiqueta(tablas, etiquetas)
             if not regs and usar_legacy:

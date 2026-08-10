@@ -7,6 +7,7 @@ import pdfplumber
 import re
 
 from .formato import _limpiar_numero
+from .paginas import iter_paginas
 
 
 def procesar_desprendibles(folder_path, formato="tabarca"):
@@ -35,7 +36,7 @@ def _desprendibles_tabarca(folder_path):
             path = os.path.join(folder_path, filename)
             
             with pdfplumber.open(path) as pdf:
-                for page in pdf.pages:
+                for page in iter_paginas(pdf):
                     texto = page.extract_text()
                     if not texto:
                         continue
@@ -126,7 +127,7 @@ def _desprendibles_italco(folder_path):
 
         path = os.path.join(folder_path, filename)
         with pdfplumber.open(path) as pdf:
-            for page in pdf.pages:
+            for page in iter_paginas(pdf):
                 texto = page.extract_text() or ""
                 if not texto:
                     continue

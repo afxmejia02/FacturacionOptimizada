@@ -7,6 +7,7 @@ import pdfplumber
 import re
 
 from .formato import _limpiar_numero
+from .paginas import iter_paginas
 
 
 def procesar_seguridad_social(folder_path, formato="tabarca"):
@@ -91,7 +92,7 @@ def _seguridad_social_tabarca(folder_path):
         path = os.path.join(folder_path, filename)
 
         with pdfplumber.open(path) as pdf:
-            for page in pdf.pages:
+            for page in iter_paginas(pdf):
 
                 texto = page.extract_text()
                 if not texto:
@@ -182,7 +183,7 @@ def _seguridad_social_italco(folder_path):
 
         path = os.path.join(folder_path, filename)
         with pdfplumber.open(path) as pdf:
-            for page in pdf.pages:
+            for page in iter_paginas(pdf):
                 tabla = page.extract_table()
                 if not tabla:
                     continue

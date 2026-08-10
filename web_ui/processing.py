@@ -27,6 +27,7 @@ from facturacion import (  # noqa: E402
     col_codigo_tarifa,
     es_celda_vacia,
     extraer_conteo_pdf,
+    iter_paginas,
     leer_excel_facturacion,
     leer_histograma_largo,
     normalizar_busqueda,
@@ -34,6 +35,7 @@ from facturacion import (  # noqa: E402
     normalizar_perfil,
     parsear_observacion_perfil,
     prefijos_seccion_pdf,
+    titulos_pdf,
 )
 from codigos import excluded_codes  # noqa: E402
 from nomina import (  # noqa: E402
@@ -79,101 +81,96 @@ def _indice_columna_cargo(tabla) -> int | None:
 
 def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
     registros = []
-    excluded_profiles = {"none", "observaciones"}
 
-    with tempfile.TemporaryDirectory(prefix="web_ui_perfiles_") as _tmp_dir:
-        with open(pdf_path, "rb") as pdf_handle:
-            pdf_bytes = pdf_handle.read()
+    import pdfplumber
 
-        tmp_pdf_path = os.path.join(_tmp_dir, "upload.pdf")
-        with open(tmp_pdf_path, "wb") as temp_pdf:
-            temp_pdf.write(pdf_bytes)
+    # ``pdf_path`` ya es un archivo temporal escrito por build_perfiles_table, asi
+    # que copiarlo a otro temporal solo duplicaba el PDF en RAM y en disco (y la
+    # copia en RAM quedaba viva durante todo el parseo). Se abre la ruta directa,
+    # igual que hace _extract_perfiles_italco_by_date.
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in iter_paginas(pdf):
+            for tabla in page.extract_tables() or []:
+                if not tabla or len(tabla) <= 7:
+                    continue
 
-        import pdfplumber
+                header = tabla[6]
+                header_norm = [
+                    normalizar_busqueda(celda).replace(" ", "") if celda else ""
+                    for celda in header
+                ]
+                if "nivel/perfil" not in header_norm:
+                    continue
 
-        with pdfplumber.open(tmp_pdf_path) as pdf:
-            for page in pdf.pages:
-                for tabla in page.extract_tables() or []:
-                    if not tabla or len(tabla) <= 7:
+                idx_perfil = header_norm.index("nivel/perfil")
+                # Los perfiles con nombre largo no caben en "Nivel/Perfil" y
+                # el nombre real queda en "Cargo" (ver _aplicar_respaldo_cargo).
+                # El encabezado ocupa DOS filas: "Nivel/ Perfil" esta en la 6
+                # y "CEDULA | TRABAJADOR | CARGO" en la 7, asi que hay que
+                # mirar ambas. No se busca mas abajo para no confundirlo con
+                # el "CARGO:" del responsable, que va en la cabecera del acta.
+                idx_cargo = _indice_columna_cargo(tabla)
+                fecha_detectada = normalizar_fecha(header[-1]) if header else None
+                if fecha_detectada is None:
+                    continue
+
+                for row in tabla[7:]:
+                    if len(row) <= idx_perfil:
+                        continue
+                    if row[4] in excluded_codes:
                         continue
 
-                    header = tabla[6]
-                    header_norm = [
-                        normalizar_busqueda(celda).replace(" ", "") if celda else ""
-                        for celda in header
-                    ]
-                    if "nivel/perfil" not in header_norm:
+                    perfil = row[idx_perfil]
+                    observacion = row[-1]
+                    perfil_norm = None
+
+                    try:
+                        tabla_info = str(tabla[4][2])
+                    except Exception:
+                        tabla_info = ""
+
+                    tabla_info_upper = tabla_info.upper()
+                    if "GLOBAL" in tabla_info_upper or "NO FACTURABLE" in tabla_info_upper:
                         continue
 
-                    idx_perfil = header_norm.index("nivel/perfil")
-                    # Los perfiles con nombre largo no caben en "Nivel/Perfil" y
-                    # el nombre real queda en "Cargo" (ver _aplicar_respaldo_cargo).
-                    # El encabezado ocupa DOS filas: "Nivel/ Perfil" esta en la 6
-                    # y "CEDULA | TRABAJADOR | CARGO" en la 7, asi que hay que
-                    # mirar ambas. No se busca mas abajo para no confundirlo con
-                    # el "CARGO:" del responsable, que va en la cabecera del acta.
-                    idx_cargo = _indice_columna_cargo(tabla)
-                    fecha_detectada = normalizar_fecha(header[-1]) if header else None
-                    if fecha_detectada is None:
+                    # Interpretar la columna Observaciones (recategorización,
+                    # "E y F", "NO FACTURABLE" y "24h", que pueden coexistir).
+                    recategorizado, es_ef, no_facturable, es_24h_obs = (
+                        parsear_observacion_perfil(observacion)
+                    )
+                    if no_facturable:
+                        continue  # la observación indica que no se factura
+
+                    if recategorizado:
+                        fuente = recategorizado
+                    elif es_ef or es_24h_obs or es_celda_vacia(observacion):
+                        # "E y F", "24 horas" o sin observación (celda vacía,
+                        # incluida None/espacios): el nivel es el de la columna,
+                        # no la última palabra de la observación.
+                        fuente = perfil.strip() if isinstance(perfil, str) else perfil
+                    else:
+                        # Otra observación no reconocida: comportamiento previo.
+                        fuente = str(observacion).split()[-1]
+                    if fuente:
+                        perfil_norm = normalizar_perfil(fuente)
+
+                    if not perfil_norm:
                         continue
 
-                    for row in tabla[7:]:
-                        if len(row) <= idx_perfil:
-                            continue
-                        if row[4] in excluded_codes:
-                            continue
-
-                        perfil = row[idx_perfil]
-                        observacion = row[-1]
-                        perfil_norm = None
-
-                        try:
-                            tabla_info = str(tabla[4][2])
-                        except Exception:
-                            tabla_info = ""
-
-                        tabla_info_upper = tabla_info.upper()
-                        if "GLOBAL" in tabla_info_upper or "NO FACTURABLE" in tabla_info_upper:
-                            continue
-
-                        # Interpretar la columna Observaciones (recategorización,
-                        # "E y F", "NO FACTURABLE" y "24h", que pueden coexistir).
-                        recategorizado, es_ef, no_facturable, es_24h_obs = (
-                            parsear_observacion_perfil(observacion)
-                        )
-                        if no_facturable:
-                            continue  # la observación indica que no se factura
-
-                        if recategorizado:
-                            fuente = recategorizado
-                        elif es_ef or es_24h_obs or es_celda_vacia(observacion):
-                            # "E y F", "24 horas" o sin observación (celda vacía,
-                            # incluida None/espacios): el nivel es el de la columna,
-                            # no la última palabra de la observación.
-                            fuente = perfil.strip() if isinstance(perfil, str) else perfil
-                        else:
-                            # Otra observación no reconocida: comportamiento previo.
-                            fuente = str(observacion).split()[-1]
-                        if fuente:
-                            perfil_norm = normalizar_perfil(fuente)
-
-                        if not perfil_norm:
-                            continue
-
-                        # 24 horas (al inicio de la hoja o en observaciones): 1/3 por
-                        # persona, salvo el marcador "E y F" (cuenta como 1 unidad).
-                        es_24h = ("24" in tabla_info) or es_24h_obs
-                        cantidad = 1 / 3 if (es_24h and not es_ef) else 1
-                        cargo = row[idx_cargo] if idx_cargo is not None and len(row) > idx_cargo else None
-                        registros.append(
-                            {
-                                "FECHA": fecha_detectada,
-                                "PERFIL_NORM": perfil_norm,
-                                "Nivel/Perfil": perfil_norm,
-                                "CARGO_NORM": normalizar_perfil(cargo) if cargo else None,
-                                "PDF": cantidad,
-                            }
-                        )
+                    # 24 horas (al inicio de la hoja o en observaciones): 1/3 por
+                    # persona, salvo el marcador "E y F" (cuenta como 1 unidad).
+                    es_24h = ("24" in tabla_info) or es_24h_obs
+                    cantidad = 1 / 3 if (es_24h and not es_ef) else 1
+                    cargo = row[idx_cargo] if idx_cargo is not None and len(row) > idx_cargo else None
+                    registros.append(
+                        {
+                            "FECHA": fecha_detectada,
+                            "PERFIL_NORM": perfil_norm,
+                            "Nivel/Perfil": perfil_norm,
+                            "CARGO_NORM": normalizar_perfil(cargo) if cargo else None,
+                            "PDF": cantidad,
+                        }
+                    )
 
     if not registros:
         _debug_print("No se extrajeron registros de perfiles por fecha desde el PDF.")
@@ -407,7 +404,7 @@ def _extract_perfiles_italco_by_date(pdf_path: str) -> pd.DataFrame:
     import pdfplumber
 
     with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
+        for page in iter_paginas(pdf):
             for tabla in page.extract_tables() or []:
                 fecha = None
                 idx_cargo = None
@@ -667,9 +664,13 @@ def process_pagos(pdf_files, excel_files, tipo, formato="tabarca"):
             # Secciones del histograma a las que corresponden los PDF (5.5 equipos,
             # 5.6 servicios...), detectadas por el título de cada página. Así la
             # validación bidireccional solo abarca lo que el PDF debía reportar.
+            # Los titulos solo dependen de los PDF, asi que se leen una vez y se
+            # reutilizan: antes cada Excel volvia a parsear todos los PDF enteros
+            # (O(excels x paginas) en vez de O(paginas)).
             prefijos = []
+            titulos = titulos_pdf(pdf_paths)
             for excel_path in excel_paths:
-                prefijos = prefijos_seccion_pdf(excel_path, pdf_paths)
+                prefijos = prefijos_seccion_pdf(excel_path, pdf_paths, titulos=titulos)
                 if prefijos:
                     break
             _debug_print(f"Secciones del histograma detectadas para los PDF: {prefijos or '(sin filtro)'}")

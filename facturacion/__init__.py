@@ -10,7 +10,9 @@ from .histograma import (
     leer_excel_facturacion,
     leer_histograma_largo,
     prefijos_seccion_pdf,
+    titulos_pdf,
 )
+from .paginas import iter_paginas
 from .normalizacion import (
     clave_equipo,
     es_celda_vacia,
@@ -36,6 +38,7 @@ __all__ = [
     "extraer_perfiles_pdf",
     "extraer_registros_etiqueta",
     "extraer_valor_etiqueta",
+    "iter_paginas",
     "leer_excel_facturacion",
     "leer_histograma_largo",
     "limpiar_nombre_equipo",
@@ -45,4 +48,5 @@ __all__ = [
     "parsear_cantidad",
     "parsear_observacion_perfil",
     "prefijos_seccion_pdf",
+    "titulos_pdf",
 ]

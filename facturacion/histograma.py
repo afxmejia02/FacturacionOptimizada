@@ -8,6 +8,7 @@ import pandas as pd
 import pdfplumber
 
 from .normalizacion import clave_equipo, normalizar_busqueda
+from .paginas import iter_paginas
 
 
 def leer_excel_facturacion(path_hist):
@@ -33,7 +34,32 @@ def col_codigo_tarifa(df):
         None,
     )
 
-def prefijos_seccion_pdf(path_hist, paths_pdf):
+def titulos_pdf(paths_pdf):
+    """Títulos (primera línea) de cada página de los PDF, normalizados.
+
+    Está separado de :func:`prefijos_seccion_pdf` porque esta parte **solo
+    depende de los PDF**, no del histograma: así el llamador puede calcularla
+    una vez y reutilizarla al probar varios Excel, en vez de reparsear todos los
+    PDF una vez por Excel.
+    """
+    if isinstance(paths_pdf, (str, os.PathLike)):
+        paths_pdf = [paths_pdf]
+
+    titulos = set()
+    for path in paths_pdf:
+        try:
+            with pdfplumber.open(path) as pdf:
+                for page in iter_paginas(pdf):
+                    texto = page.extract_text() or ""
+                    for linea in texto.splitlines()[:1]:  # título = 1ª línea
+                        if linea.strip():
+                            titulos.add(normalizar_busqueda(linea))
+        except Exception:
+            continue
+    return titulos
+
+
+def prefijos_seccion_pdf(path_hist, paths_pdf, titulos=None):
     """Detecta a qué secciones del histograma corresponden los PDF.
 
     Cada página de los PDF trae como **título** (primera línea) la sección a
@@ -46,21 +72,13 @@ def prefijos_seccion_pdf(path_hist, paths_pdf):
 
     Devuelve la lista de prefijos de código (sin duplicar). Vacía si no logra
     emparejar ningún título (en ese caso el llamador no filtra por sección).
-    """
-    if isinstance(paths_pdf, (str, os.PathLike)):
-        paths_pdf = [paths_pdf]
 
-    titulos = set()
-    for path in paths_pdf:
-        try:
-            with pdfplumber.open(path) as pdf:
-                for page in pdf.pages:
-                    texto = page.extract_text() or ""
-                    for linea in texto.splitlines()[:1]:  # título = 1ª línea
-                        if linea.strip():
-                            titulos.add(normalizar_busqueda(linea))
-        except Exception:
-            continue
+    ``titulos`` permite pasar el resultado ya calculado de :func:`titulos_pdf`
+    para no releer los PDF; si es ``None`` se calcula aquí (comportamiento
+    previo, para los llamadores que solo pasan las dos primeras posiciones).
+    """
+    if titulos is None:
+        titulos = titulos_pdf(paths_pdf)
     if not titulos:
         return []
 

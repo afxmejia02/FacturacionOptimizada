@@ -10,6 +10,7 @@ import pdfplumber
 
 from .formato import _limpiar_numero, _normalizar_linea_ocr, _parsear_linea
 from .depuracion import log as _log
+from .paginas import iter_paginas
 
 
 
@@ -61,7 +62,7 @@ def _transferencias_tabarca(folder_path):
             continue
         path = os.path.join(folder_path, filename)
         with pdfplumber.open(path) as pdf:
-            for page in pdf.pages:
+            for page in iter_paginas(pdf):
                 texto = page.extract_text()
                 if not texto:
                     continue
@@ -105,7 +106,7 @@ def _transferencias_italco(folder_path):
         filas_archivo = 0
 
         with pdfplumber.open(path) as pdf:
-            for page_num, page in enumerate(pdf.pages, start=1):
+            for page_num, page in enumerate(iter_paginas(pdf), start=1):
                 texto = page.extract_text() or ""
                 if not texto:
                     _log(f"[transfer][{filename}] página {page_num} sin texto extraíble (¿escaneo sin OCR?).")
