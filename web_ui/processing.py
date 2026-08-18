@@ -79,6 +79,55 @@ def _indice_columna_cargo(tabla) -> int | None:
     return None
 
 
+#: Un codigo de nivel es una letra seguida de hasta dos digitos: A, B4, E11...
+_RE_CODIGO_NIVEL = re.compile(r"^[A-Z]\d{0,2}$")
+
+#: Valores de la columna "Nivel/Perfil" que significan "este trabajador no se
+#: factura por nivel" (foraneos, inspectores certificados): su tarifa va por el
+#: nombre del CARGO.
+_PERFIL_NO_APLICA = {"na", "n/a", "n.a."}
+
+
+def _es_perfil_no_aplica(valor) -> bool:
+    """``True`` solo si la celda Nivel/Perfil dice explicitamente "N/A".
+
+    La celda **vacia** queda fuera a proposito: las filas del pie de pagina (el
+    bloque "2. FIRMAS", que en algunas paginas pdfplumber fusiona con la tabla
+    principal) tambien llegan sin perfil, y tomarles el "cargo" las convertiria
+    en perfiles inexistentes ("Carlos Baron Baron", "GERENTE / COORDINADOR...").
+    """
+    if valor is None:
+        return False
+    return str(valor).strip().replace(" ", "").lower() in _PERFIL_NO_APLICA
+
+
+def _es_fila_encabezado(row) -> bool:
+    """``True`` si la fila es la segunda linea del encabezado (CEDULA | TRABAJADOR...).
+
+    El recorrido de datos arranca en ``tabla[7:]``, que **incluye** esa fila de
+    encabezado; sin descartarla, su celda de observaciones ("OBSERVACIONES") se
+    tomaba como si fuera un perfil.
+    """
+    primera = row[0] if row else None
+    return bool(primera) and normalizar_busqueda(str(primera)).replace(" ", "") == "cedula"
+
+
+def _nivel_desde_observacion(observacion, perfil):
+    """Nivel deducido de la ultima palabra de la observacion, si parece un codigo.
+
+    Antes se tomaba **siempre** la ultima palabra de cualquier observacion no
+    reconocida, asi que textos como "... NO FACTURABLE" producian un perfil
+    inexistente llamado "FACTURABLE". Ahora solo se acepta si tiene forma de
+    codigo de nivel (``B4``, ``E11``); si no, manda la columna Nivel/Perfil.
+    """
+    palabras = str(observacion).split()
+    if palabras:
+        ultima = palabras[-1].upper().strip(".,;:-()")
+        if _RE_CODIGO_NIVEL.match(ultima):
+            return ultima
+    return perfil
+
+
 def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
     registros = []
 
@@ -117,6 +166,8 @@ def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
                 for row in tabla[7:]:
                     if len(row) <= idx_perfil:
                         continue
+                    if _es_fila_encabezado(row):
+                        continue  # segunda linea del encabezado, no es un trabajador
                     if row[4] in excluded_codes:
                         continue
 
@@ -141,6 +192,8 @@ def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
                     if no_facturable:
                         continue  # la observación indica que no se factura
 
+                    cargo = row[idx_cargo] if idx_cargo is not None and len(row) > idx_cargo else None
+
                     if recategorizado:
                         fuente = recategorizado
                     elif es_ef or es_24h_obs or es_celda_vacia(observacion):
@@ -149,8 +202,21 @@ def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
                         # no la última palabra de la observación.
                         fuente = perfil.strip() if isinstance(perfil, str) else perfil
                     else:
-                        # Otra observación no reconocida: comportamiento previo.
-                        fuente = str(observacion).split()[-1]
+                        # Otra observación no reconocida: solo se acepta si la
+                        # última palabra tiene forma de código de nivel.
+                        fuente = _nivel_desde_observacion(observacion, perfil)
+
+                    # "N/A" en Nivel/Perfil: el trabajador no se factura por nivel
+                    # sino por su CARGO especializado (asistencia técnica de
+                    # proveedor foráneo, inspector certificado API/ASME). El
+                    # histograma los lista con el nombre del cargo, así que ese es
+                    # su perfil real. Sin esto todos caían en un mismo perfil "NA"
+                    # que fusionaba personas distintas en una sola fila.
+                    if _es_perfil_no_aplica(fuente) and isinstance(cargo, str) and cargo.strip():
+                        fuente = cargo.strip()
+
+                    if isinstance(fuente, str):
+                        fuente = fuente.strip()
                     if fuente:
                         perfil_norm = normalizar_perfil(fuente)
 
@@ -161,7 +227,6 @@ def _extract_perfiles_by_date(pdf_path: str) -> pd.DataFrame:
                     # persona, salvo el marcador "E y F" (cuenta como 1 unidad).
                     es_24h = ("24" in tabla_info) or es_24h_obs
                     cantidad = 1 / 3 if (es_24h and not es_ef) else 1
-                    cargo = row[idx_cargo] if idx_cargo is not None and len(row) > idx_cargo else None
                     registros.append(
                         {
                             "FECHA": fecha_detectada,

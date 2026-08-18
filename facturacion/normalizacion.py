@@ -83,7 +83,12 @@ def normalizar_perfil(valor):
         return valor
     texto = valor.strip()
     texto = texto.replace("Nivel", "").replace("Perfil", "")
-    return texto.replace("/", "").strip()
+    texto = texto.replace("/", "").strip()
+    # Los nombres largos vienen partidos en varias lineas dentro de la celda del
+    # PDF ("Inspector certificado: API/ASME\nNACIONAL"), mientras que en el Excel
+    # van en una sola linea. Sin colapsar los espacios, el mismo perfil queda con
+    # dos claves distintas y nunca cruza.
+    return re.sub(r"\s+", " ", texto)
 
 def normalizar_busqueda(texto):
     if texto is None:
