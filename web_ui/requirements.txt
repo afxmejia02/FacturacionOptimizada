@@ -2,3 +2,12 @@ streamlit
 pandas
 pdfplumber
 openpyxl
+reportlab
+
+# starlette 1.4.0 volvio obligatorio el argumento keyword-only
+# "thread_minimum_size" en GZipResponder.__init__, y la subclase
+# _MediaAwareGZipResponder de Streamlit no lo pasa: la app arranca pero cada
+# request muere con TypeError y Streamlit Cloud responde 500 ("Error running
+# app"). Streamlit declara starlette>=0.40.0 sin cota superior, asi que hay que
+# fijarla aqui hasta que publiquen la correccion.
+starlette<1.4

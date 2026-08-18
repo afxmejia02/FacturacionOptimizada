@@ -3,12 +3,11 @@
 /*
 !/.gitignore
 !/requirements.txt
-!/streamlit_app.py
-!/QUICKSTART.spec
+!/README.md
 !/facturacion/
 !/facturacion/**
-!/mapa-de-cargos/
-!/mapa-de-cargos/**
+!/nomina/
+!/nomina/**
 !/web_ui/
 !/web_ui/**
 
